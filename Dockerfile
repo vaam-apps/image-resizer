@@ -129,6 +129,19 @@ WORKDIR /app
 
 EXPOSE $PORT
 
+# Redundant: the digest above was resolved from the `:nonroot` tag (see the
+# comment on the FROM line), which already runs as uid 65532 and ships a
+# pre-created "nonroot" user/group - there is no `useradd` in this
+# distroless image to create one with. Verified directly against this exact
+# pinned digest, not assumed from the tag name: `docker inspect` reports
+# Config.User=65532, and /etc/passwd + /etc/group both contain
+# `nonroot:x:65532:65532:...`. Stated explicitly because Trivy's DS-0002
+# greps the Dockerfile text for a literal USER instruction and cannot see
+# what the base image's config already set - and this one instruction
+# covers all four deploy targets below (fs, fs_otel, s3, s3_otel), which
+# all FROM this stage and never reset USER.
+USER nonroot:nonroot
+
 COPY --from=healthcheck_builder /app/healthcheck /app/healthcheck
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
