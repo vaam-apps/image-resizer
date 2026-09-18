@@ -180,10 +180,21 @@ jobs:
       - uses: actions/checkout@v4
 
       # Reads Cargo.lock directly - doesn't need `make init` or a build.
-      # No `--all-features`: validated locally (see deny.toml's own
-      # comments) against the feature set Cargo.lock actually resolved -
-      # `--all-features` re-resolves against every feature including ones
-      # nothing in this workflow ever builds with.
+      #
+      # This runs with `--all-features`, and that is deliberate. It used to be
+      # accidental: no `arguments:` is set here, and cargo-deny-action defaults
+      # `arguments` to `--all-features` (see its action.yml), so the comment
+      # that used to sit here - claiming the opposite, that --all-features was
+      # avoided on purpose - described behaviour this step has never had.
+      #
+      # Keep it. RUSTSEC-2026-0285 (rustls) is the proof: `rustls` enters this
+      # graph ONLY through the `s3` feature's AWS SDK chain. `cargo tree -i
+      # rustls` prints "nothing to print" for the default feature set and for
+      # `local_fs` and `local_fs,otel`. Had the old comment's stated intent
+      # ever been implemented, that advisory would have been invisible here.
+      #
+      # An advisory scan is not a build: seeing every feature's dependencies is
+      # the point, not a false positive.
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
