@@ -107,7 +107,18 @@ jobs:
     name: the squash message parses as a conventional commit
     runs-on: ubuntu-latest
     steps:
+      # zizmor's `artipacked` audit: the default `persist-credentials: true`
+      # leaves a GITHUB_TOKEN-scoped git credential in .git/config inside
+      # the runner's checkout, which could leak via a later artifact
+      # upload or be reused by anything that runs afterward. This job
+      # never pushes anything — parse.mjs only reads commits via `gh api`,
+      # using its own explicit GH_TOKEN env var below, not a persisted git
+      # credential — so there is nothing for the checkout to need write
+      # credentials for. Matches this repository's own existing
+      # convention (see quality.yml/ci.yml's own checkout steps).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
