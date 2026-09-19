@@ -103,6 +103,17 @@ jobs:
     name: propose the next release
     runs-on: ubuntu-latest
     steps:
+      # zizmor's own `github-app` audit (docs.zizmor.sh/audits/#github-app)
+      # flags a create-github-app-token call with no `owner`/`repositories`/
+      # `permission-*` inputs: without them the token inherits whatever
+      # permissions the App was granted at install time — which, on this
+      # App, is broader than this workflow (it's also consumed by
+      # quality.yml's sast/lint/trivy jobs, each needing different scopes).
+      # Scoped down here to exactly what this workflow does: `contents:
+      # write` (branches, tags) and `pull-requests: write` (the release
+      # PR), on this repository only — nothing this job does ever touches
+      # another repo, so `repositories:` names this one explicitly rather
+      # than defaulting to "every repo the App can see".
       - name: Mint a GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -113,6 +124,10 @@ jobs:
           # secret is named for the one this input actually wants.
           client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Open or update the release PR
         id: release
@@ -160,13 +175,21 @@ jobs:
       # This step only needs *a* working `cargo` to run `cargo metadata`,
       # not a specific one, so it stays unpinned like every other repo in
       # this org that uses it (see vaam-apps/vsms's own release-please.yml).
+      #
+      # zizmor flags this as `unpinned-uses` regardless — a deliberate,
+      # considered tradeoff, not an oversight: `dtolnay/rust-toolchain` is
+      # widely used unpinned by design (its own README recommends `@stable`
+      # over a SHA for exactly the staleness reason above), this step never
+      # executes anything the toolchain produces (cargo metadata resolves
+      # the dependency graph; it doesn't compile or run any of it), and the
+      # alternative (pinning to today's `stable` branch head,
+      # 6bed0761d98439e5a578e2877258200ad565ba87) would need a manual
+      # re-pin on every future Rust stable release to avoid `cargo
+      # metadata` eventually running against an increasingly outdated
+      # toolchain. Suppressed rather than silently left failing:
       - name: Install Rust
         if: steps.release.outputs.prs_created == 'true'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        if: steps.release.outputs.prs_created == 'true'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses] deliberately tracks current stable; see comment above
 
       # There is exactly one Cargo.lock in this tree (this is a single-crate
       # repository, not a workspace), found rather than hardcoded — the same
