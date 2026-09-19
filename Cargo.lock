@@ -1333,7 +1333,7 @@ dependencies = [
  "envconfig",
  "fast_image_resize",
  "futures",
- "hmac 0.13.0",
+ "hmac 0.12.1",
  "image",
  "ipnet",
  "libavif-sys",
