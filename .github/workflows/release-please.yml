@@ -1,0 +1,205 @@
+name: release-please
+
+# Proposes the next release as a pull request, and cuts the tag when that
+# pull request merges.
+#
+# The shape of a release here, before and after:
+#
+#   before  Cargo.toml's own `version = "0.1.2"` has never matched a real
+#           tag. This repository's only existing tags are `emgr-0.1.9` and
+#           `emgr-serverless-0.1.3` — chart-releaser's own
+#           `<chart-name>-<chart-version>` convention (`deploy-docs.yml`'s
+#           `deploy-helm` job, which runs on every push to `main`), a
+#           packaging-version axis entirely independent of the app: both
+#           charts' own `appVersion` field has sat at "0.1.2" through
+#           every one of those chart releases without moving.
+#   after   every merge to `main` updates a standing release PR proposing
+#           the app's own next version. Merging it creates a `vX.Y.Z` tag
+#           and GitHub Release — a distinct namespace from `emgr-*`, so
+#           nothing here collides with chart-releaser's own tags.
+#
+# So this workflow never publishes an image or a chart itself — it only
+# ever writes the version into the tree, creates the tag, and (unlike
+# vaam-apps/fyi, which has an existing tag-triggered release job to defer
+# to) lets release-please create the GitHub Release too, since nothing else
+# in this repository reacts to a `v*` tag today (checked: build.yml and
+# ci.yml trigger on `push: branches:` only, never `tags:`).
+#
+# ---------------------------------------------------------------------------
+# Why a GitHub App token and not GITHUB_TOKEN
+# ---------------------------------------------------------------------------
+# This is load-bearing, not hygiene. GitHub deliberately does not raise
+# workflow events for anything done with the default `GITHUB_TOKEN`, to stop
+# a workflow triggering itself. So with `GITHUB_TOKEN`, the release PR would
+# get no `quality.yml`/`CI` run at all before merge — the same failure class
+# as a workflow that only triggers on push-to-`main`: its first execution of
+# changed code is after merge.
+#
+# The App needs, on this repository only: `contents: write` (branches, tags,
+# releases) and `pull-requests: write`. Store its id and private key as
+# RELEASE_PLEASE_APP_CLIENT_ID (the App's **Client ID**, `Iv23li…`, not its
+# numeric App ID) and RELEASE_PLEASE_APP_PRIVATE_KEY — both already exist as
+# organization secrets with `visibility: all` (this repo's own quality.yml
+# already consumes them for sast/lint/trivy). If either is missing the token
+# step fails outright rather than silently falling back to `GITHUB_TOKEN` —
+# a fallback would produce exactly the silent publish-nothing release this
+# comment describes.
+#
+# ---------------------------------------------------------------------------
+# Why `release-type: simple`, not `rust`, even though Cargo.toml is a real
+# single-crate manifest here (not a virtual workspace like vsms/fyi)
+# ---------------------------------------------------------------------------
+# `release-type: rust` would likely work for this specific shape (a real
+# `[package]` section, no workspace), but it is release-please's own
+# Rust-specific strategy — a second, less-exercised code path this org has
+# not proven anywhere yet. `simple` is the one already proven end to end in
+# vaam-apps/vsms and vaam-apps/fyi: it writes `CHANGELOG.md` and, per
+# release-please-config.json's `extra-files`, the annotated
+# `# x-release-please-version` lines, with no Rust-specific behaviour to
+# verify. It also tries `version.txt` with `createIfMissing: false`, so with
+# no such file that update is skipped.
+#
+# ---------------------------------------------------------------------------
+# What this deliberately does NOT bump
+# ---------------------------------------------------------------------------
+#   - Each Helm chart's own `version:` field (the packaging/template
+#     version, per Chart.yaml's own comment: "incremented each time you
+#     make changes to the chart and its templates"). Only `appVersion:`
+#     (the deployed application's own version) is annotated. This is not a
+#     hypothetical concern here specifically: `helm/emgr/Chart.yaml`'s
+#     `version:` (0.1.9) and `helm/serverless/Chart.yaml`'s `version:`
+#     (0.1.3) have ALREADY diverged from each other and from the app's own
+#     0.1.2, produced by nine and three independent chart-releaser
+#     publishes respectively. Tying either chart's `version:` to this
+#     repository's single app release number would silently DOWNGRADE it
+#     the moment release-please proposes a version below the chart's
+#     current one (e.g. a "fix" release bumping the app 0.1.2 -> 0.1.3
+#     would downgrade helm/emgr's chart from 0.1.9 to 0.1.3) — exactly the
+#     failure shape docs/releasing.md's trap #2 warns about, arrived at by
+#     a different mechanism (a real number regression, not a YAML
+#     re-serialisation bug). A human bumps `version:` deliberately, when
+#     they actually change a chart.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Never cancel a run that may be mid-way through force-pushing the release
+# branch and then pushing a Cargo.lock refresh onto it. Keyed per ref, for
+# the same reason vaam-apps/vsms's own release.yml gives: a global key would
+# let a routine push to `main` silently cancel a queued release run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# The App token below carries every write this workflow performs; the
+# workflow's own GITHUB_TOKEN needs nothing beyond reading the checkout.
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    name: propose the next release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          # `client-id`, not the deprecated `app-id`. They are DIFFERENT
+          # values on the App's settings page — `app-id` is the numeric
+          # App ID, `client-id` is the `Iv23li…` Client ID — so the
+          # secret is named for the one this input actually wants.
+          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
+      - name: Open or update the release PR
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # --------------------------------------------------------------------
+      # Lockfile sync
+      # --------------------------------------------------------------------
+      # release-please can only rewrite files it is pointed at, and
+      # Cargo.lock cannot be pointed at: it is generated, so an
+      # `x-release-please-version` comment would not survive the next
+      # `cargo` run, and `version = "0.1.2"` could in principle appear in it
+      # for a third-party crate too — a blind rewrite corrupts it.
+      #
+      # This is not cosmetic. `Dockerfile` builds with `cargo build --locked`
+      # (four feature-gated targets: local_fs, local_fs+otel, s3, s3+otel,
+      # plus the healthcheck binary), so a release PR whose lockfile still
+      # names the old version is red on arrival at image build time, even
+      # though the `Test` jobs in `ci.yml` itself don't pass `--locked`.
+      #
+      # `prs_created` is true for an UPDATED release PR as well as a newly
+      # created one (the action sets it from `prs.length > 0`), so this runs
+      # on every release-please run that touched the branch — which it must,
+      # because release-please force-pushes that branch each time and would
+      # otherwise drop the previous run's lockfile commit.
+      - name: Check out the release branch
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          # Same App token, so the push below is an event GitHub will raise
+          # — this is what gives the release PR a real `quality.yml`/`CI`
+          # run.
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
+
+      # dtolnay/rust-toolchain publishes no semver tags — `@stable`/
+      # `@nightly` are rolling refs by design (the whole point is tracking
+      # whatever Rust currently calls stable), so a SHA pin here would
+      # freeze the toolchain version and defeat the action's own purpose.
+      # This step only needs *a* working `cargo` to run `cargo metadata`,
+      # not a specific one, so it stays unpinned like every other repo in
+      # this org that uses it (see vaam-apps/vsms's own release-please.yml).
+      - name: Install Rust
+        if: steps.release.outputs.prs_created == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        if: steps.release.outputs.prs_created == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # There is exactly one Cargo.lock in this tree (this is a single-crate
+      # repository, not a workspace), found rather than hardcoded — the same
+      # reasoning vsms's own comment gives: a hardcoded list is a second
+      # copy of "which Rust roots exist" that goes stale silently the moment
+      # a second one is added.
+      #
+      # `cargo metadata` without `--locked` is precisely the inverse of the
+      # `--locked` build the Dockerfile runs: same command, same
+      # resolution, but allowed to write the result back.
+      - name: Refresh every Cargo.lock
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          set -euo pipefail
+          git ls-files '*Cargo.lock' | while read -r lock; do
+            dir="$(dirname "$lock")"
+            echo "::group::cargo metadata in ${dir}"
+            (cd "$dir" && cargo metadata --format-version 1 > /dev/null)
+            echo "::endgroup::"
+          done
+
+      - name: Commit the lockfiles, if the version bump moved any
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- '*Cargo.lock'; then
+            echo "no lockfile changed — nothing to push"
+            exit 0
+          fi
+          git config user.name  'release-please[bot]'
+          git config user.email 'release-please[bot]@users.noreply.github.com'
+          git add -- '*Cargo.lock'
+          git commit -m 'chore: sync Cargo.lock files with the release version'
+          git push
+          echo "### Lockfiles synced" >> "$GITHUB_STEP_SUMMARY"
+          git diff --stat HEAD~1 -- '*Cargo.lock' >> "$GITHUB_STEP_SUMMARY"
