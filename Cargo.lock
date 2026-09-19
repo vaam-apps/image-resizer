@@ -1313,7 +1313,7 @@ dependencies = [
  "mimalloc",
  "mozjpeg",
  "num_cpus",
- "opentelemetry 0.29.1",
+ "opentelemetry 0.32.0",
  "opentelemetry-otlp",
  "opentelemetry-prometheus",
  "opentelemetry_sdk 0.29.0",
@@ -2521,7 +2521,11 @@ version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
 dependencies = [
+ "futures-core",
+ "futures-sink",
  "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.20",
  "tracing",
 ]
 
