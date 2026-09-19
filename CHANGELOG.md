@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/vaam-apps/image-resizer/compare/v0.2.0...v0.2.1) (2026-09-19)
+
+
+### Chores
+
+* **deps:** bump axum-tracing-opentelemetry from 0.29.0 to 0.39.1 ([#102](https://github.com/vaam-apps/image-resizer/issues/102)) ([2bb8adc](https://github.com/vaam-apps/image-resizer/commit/2bb8adce234b26695107dcf83e0213283fc1b7bf))
+* **deps:** bump tracing-opentelemetry from 0.30.0 to 0.33.0 ([#108](https://github.com/vaam-apps/image-resizer/issues/108)) ([11111c3](https://github.com/vaam-apps/image-resizer/commit/11111c3b37ebdad3f80e4905a37cbb22131b418b))
+
 ## [0.2.0](https://github.com/vaam-apps/image-resizer/compare/v0.1.2...v0.2.0) (2026-09-19)
 
 
