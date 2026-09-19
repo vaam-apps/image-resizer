@@ -16,3 +16,6 @@ charts
 # creds - copy .env.example instead.
 .env
 .env.local
+# ci/commit-message-parse is a standalone npm project (release-please
+# adoption); its own node_modules must never be committed.
+node_modules/
