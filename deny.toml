@@ -52,6 +52,16 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
 
+    # webpki-root-certs, reached via reqwest 0.13 -> rustls-platform-verifier.
+    # CDLA-Permissive-2.0 is the Community Data License Agreement's permissive
+    # variant, which is what Mozilla's CA root bundle is published under — a
+    # data licence, no copyleft, no notice obligation (unlike IJG below).
+    # Arrived with the reqwest 0.12 -> 0.13 bump (#103). Already on the
+    # allow-list in the sibling vaam-apps/vsms for the same crate and the same
+    # reason, so this matches an existing org decision rather than making a
+    # new one.
+    "CDLA-Permissive-2.0",
+
     # mozjpeg / mozjpeg-sys (#63 stage 2), for DCT-scaled JPEG decode. IJG is
     # permissive and OSI-recognised, but UNLIKE every other licence above it
     # carries an actual obligation: distributed documentation must state that
