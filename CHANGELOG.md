@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/vaam-apps/image-resizer/compare/v0.2.1...v0.2.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **ci:** scan the default branch on push, not just pull_request ([#119](https://github.com/vaam-apps/image-resizer/issues/119)) ([73d93fe](https://github.com/vaam-apps/image-resizer/commit/73d93fe1378a44aa1c35f48e9c7077c4dc957443))
+
 ## [0.2.1](https://github.com/vaam-apps/image-resizer/compare/v0.2.0...v0.2.1) (2026-09-19)
 
 
