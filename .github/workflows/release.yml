@@ -1,0 +1,324 @@
+# Publishes both Helm charts (`emgr`, `emgr-serverless`) as OCI artifacts to
+# GHCR, on a real release tag only. Modelled directly on
+# vaam-apps/vpay's `.github/workflows/release.yml` `publish-chart` job -
+# copy its git history before changing the shape of this file, most of
+# what looks like paranoia below was a real, once-published, unsigned or
+# mislabelled chart there.
+#
+# ---------------------------------------------------------------------------
+# This is NOT the first chart publishing this repository has. Read this
+# before assuming otherwise.
+# ---------------------------------------------------------------------------
+# `.github/workflows/deploy-docs.yml`'s `deploy-helm` job already publishes
+# both charts, on every push to `main`, via `helm/chart-releaser-action` -
+# a *classic* chart repository (an `index.yaml` plus per-version `.tgz`
+# GitHub Release assets) served off the `gh-pages` branch at
+# https://vaam-apps.github.io/image-resizer/. That predates this file, is
+# unaffected by it, and is not being replaced: chart-releaser keys off
+# each chart's own `version:` (it diffs "changed charts" since the last git
+# tag and skips a chart whose `version:` hasn't moved - see that job's own
+# run log, "Nothing to do. No chart changes detected."), so it already
+# implements exactly the "a human bumps `version:` when the chart itself
+# changes" discipline this file's own publish-vs-skip logic below also
+# follows, independently.
+#
+# What this file adds on top: an OCI artifact, co-located with the images
+# in the same GHCR namespace, signed with cosign - neither of which the
+# classic repository can do (no OCI support, no signing). It is additive,
+# not a migration.
+#
+# ---------------------------------------------------------------------------
+# Why a NEW workflow, not a tag trigger bolted onto build.yml
+# ---------------------------------------------------------------------------
+# `.github/workflows/build.yml` triggers on `push: branches: ["**"],
+# tags-ignore: ["v*"]` - checked empirically, not just read off the YAML:
+# `gh run list --workflow build.yml` shows no run with `headBranch` `v0.2.0`
+# or `v0.2.1`, so it has never once executed on a release tag. Extending it
+# to also build there would be a second, larger, and riskier change (it
+# would need its own decision about whether the existing flavour/semver
+# `docker/metadata-action` tag patterns, currently dead code on this path,
+# should finally activate) that has nothing to do with publishing a chart,
+# and `build.yml` is one of the two workflows presently failing on `main`
+# for unrelated reasons - not a file to touch as a side effect of this PR.
+#
+# `.github/workflows/release-please.yml`'s own header already anticipated
+# this file directly: "lets release-please create the GitHub Release too,
+# since nothing else in this repository reacts to a `v*` tag today". This
+# is that "something else" - the first thing in this repository to react to
+# a `v*` tag - so it gets its own workflow rather than being folded into
+# one whose trigger and purpose are both different. (That sentence in
+# release-please.yml is corrected in the same PR that adds this file.)
+#
+# ---------------------------------------------------------------------------
+# Why this file does NOT require `Chart.yaml`'s `version:` to equal the tag
+# ---------------------------------------------------------------------------
+# vpay's own `publish-chart` job (as of 2026-09-20) asserts
+# `version == appVersion == tag`, because release-please there was changed
+# to own BOTH `Chart.yaml` fields via `x-release-please-version`, so a
+# 1:1 mapping between chart version and release tag is guaranteed by
+# construction on every tag it cuts (vpay's own docs/status/infrastructure.md
+# records exactly why: an earlier version of that job asserted only
+# `appVersion`, a chart shipped mislabelled as a result, and #225 is what
+# added the `version:` bump plus the equality check).
+#
+# That guarantee does NOT hold here, on purpose.
+# `.github/workflows/release-please.yml`'s own header explains why in full:
+# each chart's `version:` (the packaging/template version) is deliberately
+# NOT annotated, only `appVersion:` (the deployed application's own
+# version) is - tying `version:` to the app's release number would silently
+# DOWNGRADE a chart that chart-releaser has already carried further via
+# independent publishes (`helm/emgr`'s `version:` is 0.1.9, nine chart
+# releases ahead of the app's own history). So `version:` here stays
+# hand-managed, and this job only ever validates and reads it; the
+# `appVersion == tag` check below is the one invariant release-please
+# really does own here, and is checked for the same reason vpay checks it.
+#
+# The consequence, stated so a green run here every release is not
+# mistaken for a bug: MOST releases will find `Chart.yaml`'s current
+# `version:` already published and signed from a previous release (since
+# it didn't move), and this job treats that as the expected steady state -
+# a skip, not a failure - rather than vpay's hard refusal, which only makes
+# sense under vpay's stronger 1:1 guarantee. A new OCI chart publish only
+# happens on a release where a human deliberately bumped
+# `helm/emgr/Chart.yaml`'s or `helm/serverless/Chart.yaml`'s `version:`,
+# exactly chart-releaser's own existing rule for the classic repository
+# above, applied here too rather than reinvented.
+#
+# ---------------------------------------------------------------------------
+# The helm-login vs docker-login trap (vpay's #223)
+# ---------------------------------------------------------------------------
+# `helm registry login` and `cosign` read DIFFERENT credential stores -
+# `helm registry login` writes Helm's own `HELM_REGISTRY_CONFIG`; `cosign`
+# reads the docker config instead. Logging in only the Helm way lets
+# `helm push` succeed and `cosign sign` fail immediately after with
+# `UNAUTHORIZED: unauthenticated: User cannot be authenticated with the
+# token provided` - against vpay this left a chart published and UNSIGNED.
+# Both logins are below, deliberately, for that reason.
+#
+# ---------------------------------------------------------------------------
+# `helm push` overwrites an existing OCI tag SILENTLY (measured against a
+# local `registry:2` in vpay's own PR that added this guard: pushing the
+# same chart twice returned exit 0 both times, no warning). The `state`
+# step below is what refuses that, and what tells "a real collision" apart
+# from "a previous run died between push and sign" via
+# `cosign download signature` - present means signed, absent-but-published
+# means resume by signing only, `... not found` means never published.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Two publishes of the same tag must not race for the same OCI tag. Not
+# `cancel-in-progress`: a half-cancelled `helm push` leaves a tag pointing
+# at content nobody signed.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+
+jobs:
+  # A GHCR path must be lowercase; `github.repository_owner` is not
+  # guaranteed to be. Same job, same reasoning, as vpay's own `namespace`.
+  namespace:
+    name: derive registry namespace
+    runs-on: ubuntu-latest
+    outputs:
+      namespace: ${{ steps.namespace.outputs.namespace }}
+    steps:
+      - id: namespace
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "namespace=${OWNER,,}" >> "$GITHUB_OUTPUT"
+
+  publish-chart:
+    name: publish ${{ matrix.chart.name }} to GHCR (OCI)
+    runs-on: ubuntu-latest
+    needs: [namespace]
+    strategy:
+      # One chart's skip/failure must not cancel the other - they are
+      # independent artifacts with independently hand-managed versions.
+      fail-fast: false
+      matrix:
+        chart:
+          - name: emgr
+            path: helm/emgr
+          - name: emgr-serverless
+            path: helm/serverless
+    env:
+      NAMESPACE: ${{ needs.namespace.outputs.namespace }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      # `helm/emgr`'s `common` dependency comes from a classic chart
+      # repository and needs `helm repo add` first; `helm/serverless`'s
+      # comes from an OCI registry and needs none. Adding the repo
+      # unconditionally on both matrix legs is harmless and cheap (same
+      # shape ci.yml's `helm-verify` job already uses, which also adds it
+      # once for both charts) and avoids a per-chart conditional step for
+      # a no-op.
+      #
+      # `helm dependency build`, never `update`: both charts commit a
+      # `Chart.lock`, so this resolves exactly the pinned `common` version
+      # rather than re-resolving `helm/serverless/Chart.yaml`'s own
+      # floating `version: "*"` bitnami dependency against whatever is
+      # newest today. That floating range is a pre-existing anti-pattern
+      # in this chart (flagged, not fixed here - it is what `Chart.lock`
+      # exists to pin around, and re-resolving it is a separate, real
+      # decision this PR does not make).
+      - name: helm repo add
+        run: |
+          helm repo add bjw-s-labs https://bjw-s-labs.github.io/helm-charts
+          helm repo update
+
+      - name: helm dependency build
+        run: helm dependency build ${{ matrix.chart.path }}
+
+      # Only `appVersion:` is release-please's here - see this file's own
+      # header for why `version:` is deliberately NOT compared against the
+      # tag. A blank match (VERSION or APP_VERSION empty) means the sed
+      # pattern matched nothing; both patterns are anchored to end-of-line
+      # on purpose, the same scar vpay's own equivalent step carries, so a
+      # future `# some other comment` appended to either line fails loudly
+      # here instead of silently matching zero characters.
+      - id: chart
+        name: read Chart.yaml, and refuse a tag its appVersion contradicts
+        env:
+          CHART_PATH: ${{ matrix.chart.path }}/Chart.yaml
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/v}"
+          VERSION="$(sed -n 's/^version: *\([^ #]*\).*$/\1/p' "$CHART_PATH" | head -1)"
+          APP_VERSION="$(sed -n 's/^appVersion: *"\([^"]*\)".*$/\1/p' "$CHART_PATH" | head -1)"
+          echo "tag=${TAG} chart-version=${VERSION} appVersion=${APP_VERSION}"
+          [[ -n "$VERSION" ]] || { echo "::error::${CHART_PATH} has no readable 'version:' (blank means the sed pattern matched nothing)"; exit 1; }
+          [[ -n "$APP_VERSION" ]] || { echo "::error::${CHART_PATH} has no readable 'appVersion:' (blank means the sed pattern matched nothing)"; exit 1; }
+          [[ "$APP_VERSION" == "$TAG" ]] || { echo "::error::${CHART_PATH} appVersion '${APP_VERSION}' is not tag v${TAG}. release-please owns this line via x-release-please-version (release-please-config.json); a mismatch means the annotation was dropped, or the tag was cut by hand against a stale commit."; exit 1; }
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # `ci.yml` does not run on tags (`push: branches: ["**"]`, checked
+      # the same way as build.yml above), so nothing has linted or rendered
+      # this chart since the commit that became the tag was a pull request.
+      # Same two commands as ci.yml's own `helm-verify` job, so a tag never
+      # sees a check the PR that produced it didn't already see.
+      - name: helm lint
+        run: helm lint ${{ matrix.chart.path }}
+
+      - name: helm template
+        run: helm template ${{ matrix.chart.path }}
+
+      - name: log in to GHCR (helm)
+        env:
+          ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: helm registry login "$REGISTRY" --username "$ACTOR" --password-stdin <<< "$GHCR_TOKEN"
+
+      # A SECOND login, to a different credential store - see this file's
+      # own header ("the helm-login vs docker-login trap").
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # FOUR outcomes - see this file's own header for the full reasoning
+      # on why "published and signed" is a skip here rather than the hard
+      # refusal vpay uses (vpay's stronger version==tag guarantee makes
+      # that state a bug there; here, given `version:` is hand-managed, it
+      # is the ordinary steady state for most releases).
+      #
+      #   exit 0, signature found  -> already published and signed under
+      #                               this chart's current version:. The
+      #                               ordinary case. Skip.
+      #   exit 0, NO signature     -> published but unsigned - a previous
+      #                               run died between push and sign.
+      #                               Resume: skip the push, sign what is
+      #                               there.
+      #   `... "FetchReference" ... : not found`
+      #                            -> never published under this version:.
+      #                               Push.
+      #   anything else (`dial tcp ... connection refused`, TLS, 5xx)
+      #                            -> the registry did not answer the
+      #                               question. Stop rather than push past
+      #                               it.
+      #
+      # The digest comes off `helm show chart`'s own stderr `Digest:` line,
+      # exactly as `helm push` prints one. Re-packaging to recompute it
+      # would not work: `helm package` is not byte-reproducible, so a
+      # second package of identical content hashes differently and a
+      # signature would attach to a copy nobody pulls.
+      - id: state
+        name: what is already published, and is it signed?
+        env:
+          CHART: oci://${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/${{ matrix.chart.name }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/${{ matrix.chart.name }}
+          VERSION: ${{ steps.chart.outputs.version }}
+        run: |
+          set -euo pipefail
+          if out="$(helm show chart "$CHART" --version "$VERSION" 2>&1)"; then
+            digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' <<< "$out" | head -1)"
+            if [[ -z "$digest" ]]; then
+              echo "::error::${CHART}:${VERSION} is published but helm printed no 'Digest:' line for it, so this job cannot tell whether it is signed. Refusing to push over it."
+              exit 1
+            fi
+            if cosign download signature "${IMAGE}@${digest}" > /dev/null 2>&1; then
+              echo "${CHART}:${VERSION} is already published and signed. This chart's version: is hand-managed (release-please only owns appVersion: here), so this is the expected steady state for most releases, not a collision - bump ${{ matrix.chart.path }}/Chart.yaml's version: by hand when you actually change the chart. Skipping." >> "$GITHUB_STEP_SUMMARY"
+              echo "action=skip" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "${CHART}:${VERSION} is published (${digest}) but carries no signature - a previous run died between its push and its signature. Resuming: this run signs it and does NOT push."
+            echo "action=resume" >> "$GITHUB_OUTPUT"
+            echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          elif ! grep -q 'not found' <<< "$out"; then
+            echo "::error::could not determine whether ${CHART}:${VERSION} is published - helm failed for a reason that is not 'not found', so this job will not push past it: ${out}"
+            exit 1
+          else
+            echo "${CHART}:${VERSION} is not published yet; proceeding to package and push"
+            echo "action=push" >> "$GITHUB_OUTPUT"
+          fi
+
+      # `helm push` prints both `Pushed:` and `Digest:` to STDERR and
+      # leaves stdout empty (measured against a local `registry:2` in
+      # vpay's own PR that wrote this step) - hence the redirect rather
+      # than piping stdout.
+      - id: push
+        name: package and push the chart
+        if: steps.state.outputs.action == 'push'
+        env:
+          REPO: oci://${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/${{ matrix.chart.name }}
+          VERSION: ${{ steps.chart.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm package ${{ matrix.chart.path }} --destination "${RUNNER_TEMP}/chart"
+          helm push "${RUNNER_TEMP}/chart/${{ matrix.chart.name }}-${VERSION}.tgz" "$REPO" 2>&1 | tee "${RUNNER_TEMP}/push.log"
+          digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' "${RUNNER_TEMP}/push.log" | head -1)"
+          [[ -n "$digest" ]] || { echo "::error::helm push printed no 'Digest:' line; there is nothing to sign - see the log above"; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "${IMAGE}:${VERSION}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: cosign sign (keyless, GitHub OIDC)
+        if: steps.state.outputs.action == 'push' || steps.state.outputs.action == 'resume'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/${{ matrix.chart.name }}
+          # Whichever step established it: the push on a normal release,
+          # the state probe on a resume. Exactly one of the two runs.
+          DIGEST: ${{ steps.push.outputs.digest || steps.state.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ -n "$DIGEST" ]] || { echo "::error::no digest from either the push or the state probe; there is nothing to sign"; exit 1; }
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          echo "signed ${IMAGE}@${DIGEST}" >> "$GITHUB_STEP_SUMMARY"

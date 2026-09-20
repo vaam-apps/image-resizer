@@ -21,9 +21,16 @@ name: release-please
 # So this workflow never publishes an image or a chart itself — it only
 # ever writes the version into the tree, creates the tag, and (unlike
 # vaam-apps/fyi, which has an existing tag-triggered release job to defer
-# to) lets release-please create the GitHub Release too, since nothing else
-# in this repository reacts to a `v*` tag today (checked: build.yml and
-# ci.yml trigger on `push: branches:` only, never `tags:`).
+# to) lets release-please create the GitHub Release too. build.yml and
+# ci.yml still trigger on `push: branches:` only, never `tags:`, so neither
+# reacts to the tag this workflow cuts.
+#
+# Corrected: this comment used to say nothing in this repository reacts to
+# a `v*` tag. That stopped being true the moment `.github/workflows/
+# release.yml` was added — it publishes both Helm charts to GHCR as OCI
+# artifacts, triggered by exactly the tag this workflow creates. See that
+# file's own header for the full reasoning; it does not publish an image
+# either, so the "never publishes an image" sentence above still holds.
 #
 # ---------------------------------------------------------------------------
 # Why a GitHub App token and not GITHUB_TOKEN
