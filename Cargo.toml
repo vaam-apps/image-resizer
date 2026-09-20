@@ -136,8 +136,27 @@ vaam-image-webp = { git = "https://github.com/vaam-apps/vaam-image-webp", rev = 
 #
 # See `src/services/image/avif_codec.rs` for the measured cost of this swap
 # against the AOM encoder it replaces.
-ravif = "0.13"
-avif-decode = "3"
+#
+# `default-features = false` on ravif is load-bearing and easy to get wrong.
+# ravif's own `default` is `["asm", "threading"]`, and its `asm` feature is
+# `["rav1e/asm"]` - which switches rav1e's assembly back ON even though ravif
+# declares rav1e with `default-features = false`. Reading only rav1e's
+# dependency line suggests this crate is already assembler-free; it is not.
+# rav1e's `asm` pulls `nasm-rs` AND `cc`, so leaving ravif's defaults on means
+# a C toolchain and NASM in every build image. `threading` is kept - it is
+# rayon, pure Rust, and AVIF encode is slow enough to want it.
+ravif = { version = "0.13", default-features = false, features = ["threading"] }
+# `default-features = false` drops avif-decode's `binary` feature, which exists
+# for its bundled CLI and pulls `lodepng` that nothing here calls.
+avif-decode = { version = "3", default-features = false }
+# Container parsing, used directly by `avif_codec::peek_dimensions` to read
+# dimensions from the AV1 sequence header without decoding a frame.
+# `avif-decode` offers no way to get dimensions short of a full rav1d decode,
+# so the pre-decode resolution guard - which exists to reject an oversized
+# image *before* paying to decode it - cannot be built on avif-decode alone.
+# Already in the graph transitively at this exact version via avif-decode, so
+# naming it directly adds no resolution risk.
+avif-parse = "2"
 # Pixel-buffer types appearing in ravif's and avif-decode's public signatures.
 rgb = "0.8"
 imgref = "1.12"
