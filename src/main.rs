@@ -84,23 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// `?` rather than `.ok()`-ed away: a service that cannot do TLS has no
 /// business starting up and reporting itself healthy, so a failure here
 /// must abort startup loudly, not get silently swallowed.
-fn install_crypto_provider() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    rustls_graviola::default_provider()
-        .install_default()
-        .map_err(|_already_installed| -> Box<dyn std::error::Error + Send + Sync> {
-            // The `Err` payload is the `Arc<CryptoProvider>` that lost the
-            // race, which does not implement `std::error::Error` (it's a
-            // plain data struct - cipher suites, kx groups, etc. - not an
-            // error type), so it can't be forwarded as-is. There is also
-            // exactly one call site (this function, called once, first line
-            // of `main`), so reaching this branch would mean something
-            // outside this codebase's control installed a provider first;
-            // that is exactly the "don't come up healthy" case to fail on.
-            "a rustls crypto provider was already installed before Graviola \
-             could be - refusing to start with an unknown TLS backend"
-                .into()
-        })
-}
+// Re-exported from the library so `main` and the test modules that build
+// real reqwest Clients share one implementation - see that module's doc
+// comment for why it does not live here.
+use modules::utils::crypto::install_crypto_provider;
 
 async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = EnvConfig::init_from_env()?;

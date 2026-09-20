@@ -8,7 +8,7 @@
 //! makes for that format - i.e. this measures the real decode cost the
 //! service pays, not a synthetic stand-in.
 //!
-//! JPEG instead calls `ImageService::mozjpeg_decode(&bytes, 8)` (#67):
+//! JPEG instead calls `ImageService::jpeg_scaled_decode(&bytes, 8)`:
 //! every JPEG decode, DCT-scaled or not, now goes through mozjpeg rather
 //! than `image`-crate/zune-jpeg - see that function's own doc comment and
 //! `decode_jpeg_scaled`'s retired-rationale comment for why. `scale_num =
@@ -16,10 +16,10 @@
 //! resize is requested here), the same call `decode_jpeg_scaled` makes when
 //! `select_jpeg_dct_scale` picks no scaling.
 //!
-//! WebP calls `ImageService::libwebp_decode` (#66) - real libwebp via the
+//! WebP calls `ImageService::decode_webp_pixels` - pure-Rust WebP via the
 //! `webp` crate, not `image-webp`'s pure-Rust decoder `write_to`/
 //! `load_from_memory_with_format` would reach; see that function's own doc
-//! comment and `decode_webp_libwebp`'s for why production no longer uses
+//! comment and `decode_webp_pixels`'s for why production no longer uses
 //! the pure-Rust path.
 //!
 //! AVIF (#67) calls `avif_codec::decode` - `libavif`+dav1d, this crate's
@@ -43,7 +43,7 @@
 //! commit):
 //!
 //! - **WebP decode direction inverts.** On the synthetic fixture,
-//!   `libwebp_decode` (#66) measures *slower* than the pure-Rust
+//!   `decode_webp_pixels` measures *slower* than the pure-Rust
 //!   `image-webp` decoder it replaced. On the real photo fixture, it's
 //!   faster - matching the real-corpus scratch-crate measurement #66's
 //!   implementation was actually justified against (24 Kodak photos,
@@ -82,7 +82,7 @@ fn bench_decode(c: &mut Criterion) {
                 BenchmarkId::new("jpeg", format!("{kind}/{w}x{h}")),
                 bytes,
                 |b, bytes| {
-                    b.iter(|| ImageService::mozjpeg_decode(bytes, 8).expect("decode fixture"));
+                    b.iter(|| ImageService::jpeg_scaled_decode(bytes, 8).expect("decode fixture"));
                 },
             );
         }
@@ -115,7 +115,7 @@ fn bench_decode(c: &mut Criterion) {
                 BenchmarkId::new("webp", format!("{kind}/{w}x{h}")),
                 bytes,
                 |b, bytes| {
-                    b.iter(|| ImageService::libwebp_decode(bytes).expect("decode fixture"));
+                    b.iter(|| ImageService::decode_webp_pixels(bytes).expect("decode fixture"));
                 },
             );
         }

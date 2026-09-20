@@ -239,11 +239,17 @@ pub fn apply_common_middlewares(router: Router, config: MiddlewareConfig) -> Rou
         .and(NotForContentType::new("application/octet-stream"))
         .and(SizeAbove::new(0));
 
+    // No `.zstd(true)`: zstd was the one arm of tower-http's
+    // `compression-full` feature that is not pure Rust - it resolves to
+    // `zstd-sys`, which compiles the C zstd library from source - so the
+    // feature is no longer enabled and the builder method no longer exists.
+    // brotli, gzip and deflate all remain, and between them cover every
+    // `Accept-Encoding` a browser sends; zstd is negotiated by very few
+    // clients and only ever as an extra.
     let compression_layer = CompressionLayer::new()
         .br(true)
         .deflate(true)
         .gzip(true)
-        .zstd(true)
         .compress_when(compression_predicate);
 
     let saturation_guard = SaturationGuard {
@@ -408,6 +414,10 @@ mod tests {
     }
 
     fn conditional_test_router() -> Router {
+        // These build real reqwest Clients through production code, which
+        // panics unless a rustls crypto provider is installed. `main()`
+        // does that at startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         let app = Router::new().route("/api/images/files/{key}", get(download_stub));
         app.layer(middleware::from_fn(conditional_download_middleware))
     }

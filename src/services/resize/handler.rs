@@ -461,6 +461,10 @@ mod tests {
     /// `CountingStorage`'s doc comment), not 100 of each.
     #[tokio::test]
     async fn concurrent_requests_for_same_key_coalesce_to_single_flight() {
+        // Builds a real reqwest Client through production code, which panics
+        // unless a rustls crypto provider is installed. `main()` does that at
+        // startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         let request_count = Arc::new(AtomicUsize::new(0));
         let url =
             spawn_counting_test_image_server(tiny_png_bytes(), Arc::clone(&request_count)).await;
@@ -534,6 +538,10 @@ mod tests {
     /// follower must observe a real error and return promptly, not hang.
     #[tokio::test]
     async fn leader_failure_is_propagated_to_all_followers_not_hung_forever() {
+        // Builds a real reqwest Client through production code, which panics
+        // unless a rustls crypto provider is installed. `main()` does that at
+        // startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         // No server listening at this address - every connection attempt
         // fails immediately, standing in for a leader that fails.
         let dead_url = "http://127.0.0.1:1".to_string();

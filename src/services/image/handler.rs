@@ -24,7 +24,8 @@ use tokio::sync::Semaphore;
 use tracing::warn;
 use url::Url;
 
-/// Default lossy-WebP encode quality (0.0-100.0, libwebp's own scale), used
+/// Default lossy-WebP encode quality (0.0-100.0, `image_webp`'s own
+/// `EncoderParams::lossy_quality` scale), used
 /// when neither `ResizeQuery::webp_quality` nor `ResizeQuery::quality` is
 /// set (#35). 82.0 is a commonly-cited "high quality, still meaningfully
 /// smaller than lossless" WebP setting, and is corroborated by
@@ -56,9 +57,12 @@ pub const DEFAULT_JPEG_QUALITY: u8 = 75;
 /// `ResizeQuery::quality` (the `q:{0-100}` processing option) isn't set.
 /// `80` was `AvifEncoder::new`'s own pre-#68 default and `cavif`'s
 /// reference default, and it survives a second look: `adr/0005`
-/// re-measured against the encoders actually shipped today (libavif/AOM
-/// and mozjpeg, superseding `adr/0004`, whose numbers are void) and the
-/// owner reviewed the result and chose to keep 80.
+/// re-measured against the encoders actually shipped at the time (libavif/
+/// AOM and mozjpeg, superseding `adr/0004`, whose numbers are void) and the
+/// owner reviewed the result and chose to keep 80. the C-dependency removal swapped mozjpeg for
+/// `jpeg-encoder` without re-running this comparison - see
+/// `jpeg_scaled_decode`'s own doc comment for the equivalent TODO on the
+/// decode side.
 ///
 /// **Read this before "optimising" it.** At 80 an AVIF is a median 1.14x
 /// LARGER than default JPEG, larger on 19 of 24 Kodak images - because
@@ -733,11 +737,11 @@ impl ImageService {
     /// what each encoder below can do with them - not uniform across
     /// formats, exactly like `icc_profile` already isn't (see that field's
     /// own comment on the JPEG/AVIF branches below):
-    /// - **JPEG**: written as a raw `APP1` marker by `Self::encode_jpeg`
-    ///   (mozjpeg's `CompressStarted::write_marker`, the same primitive
-    ///   `write_icc_profile` already uses for `APP2`) - mozjpeg has no
-    ///   higher-level EXIF API, so this crate builds the `"Exif\0\0"`-
-    ///   prefixed segment by hand.
+    /// - **JPEG**: written via `Self::encode_jpeg`'s call to
+    ///   `jpeg_encoder::Encoder::add_exif_metadata` (C-dependency removal) - unlike the
+    ///   mozjpeg path this replaced, `jpeg-encoder` has a dedicated EXIF
+    ///   API that builds the `"Exif\0\0"`-prefixed `APP1` segment itself,
+    ///   so this crate no longer needs to.
     /// - **PNG**: `image::codecs::png::PngEncoder::set_exif_metadata` -
     ///   PNG's `eXIf` chunk is a real, standard part of the format
     ///   (verified against `image-0.25.10/src/codecs/png.rs`: the decoder
@@ -1043,7 +1047,7 @@ impl ImageService {
                 Self::encode_png(&img, icc_ref, exif_ref)
                     .context(format!("Failed to encode image to {:?}", output_format))?
             }
-            // #76: routed through `Self::encode_jpeg` (mozjpeg/libjpeg-turbo)
+            // #76: routed through `Self::encode_jpeg` (`jpeg-encoder`, the C-dependency removal)
             // instead of `image::codecs::jpeg::JpegEncoder` so
             // `jpeg_progressive`/`jpeg_no_subsampling` - and, via
             // `encode_with_max_bytes`, `max_bytes` - actually reach the
@@ -1126,7 +1130,7 @@ impl ImageService {
             _ => {
                 // Pre-allocate buffer based on estimated size - only
                 // meaningful for the `write_to` path below; the WebP path
-                // above gets its output buffer from libwebp itself.
+                // above gets its output buffer from `image_webp` itself.
                 let estimated_size = Self::estimate_output_size(&img, &output_format);
                 let mut buf = Cursor::new(Vec::with_capacity(estimated_size));
 
@@ -1258,15 +1262,16 @@ impl ImageService {
     /// carry animation in this crate), or the source is a `WebP` that isn't
     /// actually animated - in the latter case the ordinary single-image
     /// path decodes it instead. That's a deliberate choice, not just an
-    /// optimisation to skip: `WebPDecoder`'s `AnimationDecoder::into_frames`
-    /// upgrades every frame to RGBA unconditionally, even when the source
-    /// has no alpha channel at all (`image-0.25.10/src/codecs/webp/decoder.rs`),
-    /// whereas the ordinary single-image decode path preserves the source's
-    /// real colour type (`Rgb8` for an alpha-less WebP). This doesn't
-    /// currently change the *encoded* bytes for WebP output specifically -
-    /// `Self::encode_webp` already always upconverts to RGBA before handing
-    /// pixels to libwebp, regardless of which path decoded them - but it
-    /// does avoid the frame iterator's extra decode-path overhead and a
+    /// optimisation to skip: the frame-by-frame WebP path below (the C-dependency removal,
+    /// hand-rolled against `image_webp::WebPDecoder::read_frame` - see that
+    /// branch's own comment) upgrades every frame to RGBA unconditionally,
+    /// even when the source has no alpha channel at all, whereas the
+    /// ordinary single-image decode path preserves the source's real
+    /// colour type (`Rgb8` for an alpha-less WebP). This doesn't currently
+    /// change the *encoded* bytes for WebP output specifically -
+    /// `Self::encode_webp` already always upconverts to RGBA before
+    /// encoding, regardless of which path decoded them - but it does avoid
+    /// the frame-by-frame path's extra decode-path overhead and a
     /// pointless `normalize_transparent_pixels` pass over an image with no
     /// real transparency, for what is expected to be the common case (a
     /// static WebP resized to another static WebP). GIF has no equivalent
@@ -1277,12 +1282,14 @@ impl ImageService {
     /// to avoid decoding the source twice.
     ///
     /// Otherwise returns the decoded frames plus the shared canvas
-    /// dimensions every frame is composited to - both `GifDecoder` and
-    /// `WebPDecoder`'s `AnimationDecoder::into_frames()` already composite
-    /// each frame to the *full* canvas size internally (disposal methods
-    /// resolved, GIF's own partial-frame-rectangle handling included), so
-    /// every `image::Frame` returned here is a same-size, ready-to-resize
-    /// RGBA image - no manual compositing needed by the caller.
+    /// dimensions every frame is composited to - both `GifDecoder`'s
+    /// `AnimationDecoder::into_frames()` and the hand-rolled WebP
+    /// `read_frame` loop below already composite each frame to the *full*
+    /// canvas size internally (disposal methods resolved, GIF's own
+    /// partial-frame-rectangle handling included, WebP's own
+    /// `extended::composite_frame`), so every `image::Frame` returned here
+    /// is a same-size, ready-to-resize RGBA image - no manual compositing
+    /// needed by the caller.
     fn decode_animation_source(
         image_bytes: &[u8],
         source_format: ImageFormat,
@@ -1303,21 +1310,71 @@ impl ImageService {
                 )?;
                 Ok(Some((frames, src_width, src_height)))
             }
+            // the C-dependency removal: `image::codecs::webp::WebPDecoder` no longer exists -
+            // `image`'s own "webp" feature was dropped in favour of routing
+            // every WebP direction through `image_webp` (`vaam-image-webp`)
+            // directly (see `Cargo.toml`'s own comment on that crate).
+            // `image_webp::WebPDecoder` has no `AnimationDecoder`/`Frames`
+            // trait integration of its own (that adapter lived in `image`'s
+            // now-removed webp module), so frames are read by hand via its
+            // `num_frames`/`read_frame` API instead of
+            // `Self::collect_frames_capped`'s iterator-based helper.
+            //
+            // This is actually a strictly cheaper fail-closed guard than
+            // `collect_frames_capped`'s: `num_frames()` comes straight from
+            // the header's `ANMF` chunk directory (populated while parsing
+            // the container structure, before any frame's pixel data is
+            // touched - see `image_webp`'s own `WebPDecoder::new`), so an
+            // over-the-cap source is rejected before decoding *any* frame,
+            // rather than after decoding up to `max_animation_frames` of
+            // them.
             ImageFormat::WebP => {
-                let mut decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(image_bytes))
+                let mut decoder = image_webp::WebPDecoder::new(Cursor::new(image_bytes))
                     .context("Failed to read WebP header")?;
-                if !decoder.has_animation() {
+                if !decoder.is_animated() {
                     return Ok(None);
                 }
-                decoder
-                    .set_limits(Self::build_decode_limits(config.max_src_resolution_mp))
-                    .context("WebP source exceeds configured decode limits")?;
                 let (src_width, src_height) = decoder.dimensions();
                 Self::check_source_resolution(src_width, src_height, config.max_src_resolution_mp)?;
-                let frames = Self::collect_frames_capped(
-                    decoder.into_frames(),
-                    config.max_animation_frames,
-                )?;
+                if let Some(max_alloc) =
+                    Self::build_decode_limits(config.max_src_resolution_mp).max_alloc
+                {
+                    decoder.set_memory_limit(usize::try_from(max_alloc).unwrap_or(usize::MAX));
+                }
+
+                let num_frames = usize::try_from(decoder.num_frames()).unwrap_or(usize::MAX);
+                if num_frames > config.max_animation_frames {
+                    anyhow::bail!(
+                        "animated source exceeds the maximum of {} frames",
+                        config.max_animation_frames
+                    );
+                }
+
+                let output_buffer_size = decoder
+                    .output_buffer_size()
+                    .context("WebP source exceeds configured decode limits")?;
+                let has_alpha = decoder.has_alpha();
+                let mut frames = Vec::with_capacity(num_frames);
+                for _ in 0..num_frames {
+                    let mut buf = vec![0u8; output_buffer_size];
+                    let duration_ms = decoder
+                        .read_frame(&mut buf)
+                        .context("Failed to decode animation frame")?;
+                    let rgba = if has_alpha {
+                        image::RgbaImage::from_raw(src_width, src_height, buf)
+                            .context("WebP: decoded animation frame buffer size mismatch")?
+                    } else {
+                        let rgb = image::RgbImage::from_raw(src_width, src_height, buf)
+                            .context("WebP: decoded animation frame buffer size mismatch")?;
+                        DynamicImage::ImageRgb8(rgb).to_rgba8()
+                    };
+                    frames.push(image::Frame::from_parts(
+                        rgba,
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(duration_ms, 1),
+                    ));
+                }
                 Ok(Some((frames, src_width, src_height)))
             }
             _ => Ok(None),
@@ -1439,84 +1496,172 @@ impl ImageService {
         Ok((buf, "image/gif".to_string()))
     }
 
-    /// Encodes `frames` as an animated WebP via the `webp` crate's
-    /// `AnimEncoder` (real libwebp, `WebPAnimEncoder` FFI - already a
-    /// dependency for this crate's static lossy-WebP path,
-    /// [`Self::encode_webp`]).
+    /// Encodes `frames` as an animated WebP by hand-assembling the RIFF
+    /// `VP8X`/`ANIM`/`ANMF` container around per-frame lossless `VP8L`
+    /// bitstreams from `image_webp::WebPEncoder` (C-dependency removal).
     ///
-    /// Verified rather than assumed: #49 explicitly calls out not to take
-    /// "the `webp` crate has no animation encoding API" on faith, and it
-    /// turns out that premise is wrong. `webp 0.3.1`'s
-    /// `animation_encoder.rs` exposes `AnimEncoder`/`AnimFrame`
-    /// unconditionally (no extra cargo feature beyond the crate's own
-    /// `default = ["img"]`, already enabled here), wrapping libwebp's own
-    /// `WebPAnimEncoderXxx` C functions directly - real animated WebP
-    /// output *is* possible through the dependency this crate already has,
-    /// no new one needed. What is *not* possible is animated WebP through
-    /// `image`'s own bundled encoder (`image-webp 0.2.4`'s
-    /// `WebPEncoder::encode` only ever writes a single `VP8L` chunk, no
-    /// `ANIM`/`ANMF` support) - that half of the original assumption does
-    /// hold, which is why this goes through the `webp` crate instead, not
-    /// `image::codecs::webp::WebPEncoder`.
+    /// `vaam-image-webp`, unlike the `webp`/libwebp crate this replaces,
+    /// has no animation-writing API at all - only single-image `VP8`/
+    /// `VP8L` encoding (`WebPEncoder::encode`'s own doc comment: "Defaults
+    /// to VP8L lossless encoding... to emit a lossy VP8 bitstream
+    /// instead"; no `AnimEncoder` equivalent exists anywhere in the crate).
+    /// The container format itself is a small, fully-specified binary
+    /// layout (RIFF chunk framing plus three fixed-size headers - `VP8X`
+    /// 10 bytes, `ANIM` 6 bytes, `ANMF` 16 bytes), assembled here directly
+    /// against that layout and cross-checked byte-for-byte against this
+    /// same fork's own *decoder* (`extended::read_extended_header`,
+    /// `decoder.rs`'s `WebPRiffChunk::VP8X`/`ANMF` parsing and
+    /// `read_frame`) rather than against the spec in the abstract, so what
+    /// is written here is guaranteed round-trippable by
+    /// `Self::decode_animation_source` above, not just spec-shaped.
+    ///
+    /// Every frame is encoded losslessly (`VP8L`), not through
+    /// `EncoderParams::use_lossy` the way the static `Self::encode_webp`
+    /// path can: `WebPEncoder::encode` only emits the "simple" (no `VP8X`)
+    /// RIFF wrapper - `"WEBP"` followed by exactly one bare bitstream
+    /// chunk, precisely the shape an `ANMF` sub-chunk needs - when the
+    /// frame carries no ICC/EXIF/XMP metadata *and* isn't "lossy with
+    /// alpha" (`encoder.rs`'s own `lossy_with_alpha` check, which forces
+    /// the `VP8X`-wrapped "extended" container specifically for that
+    /// combination). Every frame here is `Rgba8` (`encode_animation`'s own
+    /// doc comment: alpha is kept end to end), so a *lossy* encode would
+    /// hit that condition and produce a container this function would then
+    /// have to strip the `VP8X` back out of. Lossless sidesteps that
+    /// entirely - `EncoderParams::default()`'s `use_lossy: false` always
+    /// takes the simple-container path regardless of alpha, so each
+    /// frame's encoded bytes are exactly 12 bytes of `RIFF`/size/`WEBP`
+    /// followed by one `VP8L` chunk, safe to lift verbatim into an `ANMF`.
+    ///
+    /// TODO(re-measure): this drops per-frame lossy compression for animated
+    /// WebP output specifically - the old `webp`-crate path honoured
+    /// `params.quality`/`DEFAULT_WEBP_QUALITY` via real libwebp's
+    /// `WebPAnimEncoder`, and animated WebP output is now always larger,
+    /// lossless-only. A lossy path is possible in principle (encode lossy,
+    /// then strip the resulting frame's own `VP8X`/`ALPH` sub-chunks back
+    /// out of the extended container `vaam-image-webp` produces for it)
+    /// but was not attempted here, given the risk of a subtly-wrong hand-
+    /// rolled parse shipping unverified; flagged as a follow-up rather than
+    /// guessed at.
     fn encode_animated_webp(
         frames: Vec<image::Frame>,
-        params: &ResizeQuery,
+        _params: &ResizeQuery,
     ) -> Result<(Vec<u8>, String)> {
         if frames.is_empty() {
             anyhow::bail!("cannot encode an animated WebP with zero frames");
         }
 
-        // Rebuilds each frame's cumulative *end* timestamp (milliseconds)
-        // from its individual delay - `AnimFrame::from_rgba`'s `timestamp`
-        // argument is a point on libwebp's animation timeline, not a
-        // per-frame duration the way `image::Frame::delay` is.
-        let mut timestamp_ms: i64 = 0;
-        let mut timestamps = Vec::with_capacity(frames.len());
+        let mut durations_ms = Vec::with_capacity(frames.len());
         let mut buffers = Vec::with_capacity(frames.len());
         for frame in frames {
             let (numer, denom) = frame.delay().numer_denom_ms();
-            let delay_ms = if denom == 0 {
-                0
-            } else {
-                i64::from(numer) / i64::from(denom)
-            };
-            timestamp_ms = timestamp_ms.saturating_add(delay_ms);
-            timestamps.push(i32::try_from(timestamp_ms).unwrap_or(i32::MAX));
+            let delay_ms = numer.checked_div(denom).unwrap_or(0);
+            durations_ms.push(delay_ms);
             buffers.push(frame.into_buffer());
         }
 
         let (width, height) = buffers[0].dimensions();
+        // `VP8X`/`ANMF`'s width/height fields are 24-bit ("dimension -
+        // 1") - #26's resolution cap keeps real sources nowhere near this,
+        // but the wire format's own ceiling is guarded explicitly rather
+        // than silently truncated.
+        let width_minus_1 = width
+            .checked_sub(1)
+            .filter(|&w| w < (1 << 24))
+            .context("animated WebP: canvas width out of the container's 24-bit range")?;
+        let height_minus_1 = height
+            .checked_sub(1)
+            .filter(|&h| h < (1 << 24))
+            .context("animated WebP: canvas height out of the container's 24-bit range")?;
 
-        let mut webp_config = webp::WebPConfig::new()
-            .map_err(|_| anyhow::anyhow!("failed to initialize libwebp animation encoder config"))?;
-        // Same default quality as the static lossy-WebP path
-        // (`Self::encode_webp`'s `DEFAULT_WEBP_QUALITY` call site) unless
-        // overridden by `params.quality` - this crate doesn't currently
-        // wire `quality` into the *static* WebP path either (a separate,
-        // pre-existing gap noted in `DEFAULT_WEBP_QUALITY`'s own doc
-        // comment), so keeping the animated path consistent with that
-        // rather than silently diverging.
-        let quality = params.quality.map(f32::from).unwrap_or(DEFAULT_WEBP_QUALITY);
-        webp_config.quality = quality;
-        webp_config.alpha_quality = quality as i32;
+        let mut anmf_chunks = Vec::with_capacity(buffers.len());
+        for (buffer, duration_ms) in buffers.into_iter().zip(durations_ms) {
+            if buffer.width() != width || buffer.height() != height {
+                anyhow::bail!("animated WebP: every frame must share the first frame's dimensions");
+            }
 
-        let mut encoder = webp::AnimEncoder::new(width, height, &webp_config);
-        encoder.set_loop_count(0); // loop forever, matching `Repeat::Infinite` in the GIF path above
+            let mut frame_webp = Vec::new();
+            image_webp::WebPEncoder::new(&mut frame_webp)
+                .encode(buffer.as_raw(), width, height, image_webp::ColorType::Rgba8)
+                .context("image-webp: failed to encode animation frame")?;
 
-        for (buffer, timestamp) in buffers.iter().zip(timestamps) {
-            encoder.add_frame(webp::AnimFrame::from_rgba(
-                buffer.as_raw(),
-                buffer.width(),
-                buffer.height(),
-                timestamp,
-            ));
+            // Strip the 12-byte `RIFF` + size(u32 LE) + `WEBP` wrapper
+            // `WebPEncoder::encode` always writes first - see this
+            // function's own doc comment for why the remainder is
+            // guaranteed to be exactly one bare `VP8L` chunk (fourcc +
+            // size + payload [+ pad byte]) with no further wrapping.
+            let inner = frame_webp
+                .get(12..)
+                .context("image-webp: encoded frame shorter than the RIFF/WEBP header")?;
+
+            let duration_24 = duration_ms.min((1 << 24) - 1);
+            let mut anmf_payload = Vec::with_capacity(16 + inner.len());
+            anmf_payload.extend_from_slice(&0u32.to_le_bytes()[..3]); // Frame X / 2
+            anmf_payload.extend_from_slice(&0u32.to_le_bytes()[..3]); // Frame Y / 2
+            anmf_payload.extend_from_slice(&width_minus_1.to_le_bytes()[..3]);
+            anmf_payload.extend_from_slice(&height_minus_1.to_le_bytes()[..3]);
+            anmf_payload.extend_from_slice(&duration_24.to_le_bytes()[..3]);
+            // Flags byte: bit0 (dispose) = 0 ("none"); bit1 (blending) = 1
+            // ("do not blend"). Every frame here is already the *full*,
+            // final composited canvas (`encode_animation`'s own doc
+            // comment), so it must fully replace the canvas rather than
+            // alpha-blend over whatever the previous frame left behind -
+            // `extended::composite_frame`'s fast "just copy" path (read
+            // directly from this fork's decoder source, not assumed) is
+            // taken exactly when a frame is full-canvas-sized *and*
+            // non-blending, which this flag combination selects.
+            anmf_payload.push(0b0000_0010);
+            anmf_payload.extend_from_slice(inner);
+
+            anmf_chunks.push(Self::write_riff_chunk(b"ANMF", &anmf_payload));
         }
 
-        let memory = encoder
-            .try_encode()
-            .map_err(|e| anyhow::anyhow!("Failed to encode animated WebP: {e:?}"))?;
+        let mut vp8x_payload = Vec::with_capacity(10);
+        // Flags byte: bit4 (0x10) = has alpha (every frame here carries
+        // one); bit1 (0x02) = animation present.
+        vp8x_payload.push(0b0001_0010);
+        vp8x_payload.extend_from_slice(&[0, 0, 0]); // reserved
+        vp8x_payload.extend_from_slice(&width_minus_1.to_le_bytes()[..3]);
+        vp8x_payload.extend_from_slice(&height_minus_1.to_le_bytes()[..3]);
 
-        Ok((memory.to_vec(), "image/webp".to_string()))
+        let mut anim_payload = Vec::with_capacity(6);
+        // Background colour: never actually sampled by a decoder for this
+        // output - every frame is full-canvas and non-blending (see the
+        // flags byte above), so `extended::composite_frame`'s background-
+        // fill/clear branches are never reached.
+        anim_payload.extend_from_slice(&[0, 0, 0, 0]);
+        anim_payload.extend_from_slice(&0u16.to_le_bytes()); // loop forever, matching `Repeat::Infinite` in the GIF path above
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"WEBP");
+        payload.extend_from_slice(&Self::write_riff_chunk(b"VP8X", &vp8x_payload));
+        payload.extend_from_slice(&Self::write_riff_chunk(b"ANIM", &anim_payload));
+        for chunk in anmf_chunks {
+            payload.extend_from_slice(&chunk);
+        }
+
+        let mut out = Vec::with_capacity(8 + payload.len());
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&payload);
+
+        Ok((out, "image/webp".to_string()))
+    }
+
+    /// Wraps `payload` in a single RIFF sub-chunk: 4-byte `fourcc`, 4-byte
+    /// LE size, the payload itself, and a zero pad byte if the payload's
+    /// length is odd (the RIFF spec pads every chunk to an even boundary) -
+    /// shared by every hand-assembled chunk in
+    /// `Self::encode_animated_webp` (`VP8X`, `ANIM`, `ANMF`) so the padding
+    /// rule can't be forgotten on one of them.
+    fn write_riff_chunk(fourcc: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(9 + payload.len());
+        out.extend_from_slice(fourcc);
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload);
+        if payload.len() % 2 == 1 {
+            out.push(0);
+        }
+        out
     }
 
     /// Reproduces `image` crate's own aspect-ratio scaling formula exactly
@@ -2127,11 +2272,20 @@ impl ImageService {
         DynamicImage::ImageRgba8(silhouette).blur(sigma).to_rgba8()
     }
 
-    /// Encodes `img` to WebP via the `webp` crate directly (libwebp
-    /// bindings), rather than through `DynamicImage::write_to` - the
-    /// `image` crate's own WebP encoder is lossless-only, which is exactly
-    /// the bug this exists to fix. `quality` (0.0-100.0) is used only when
-    /// `lossless` is `false`.
+    /// Encodes `img` to WebP via `image_webp::WebPEncoder` (the C-dependency removal,
+    /// `vaam-image-webp` - this org's fork of `image-webp` tracking its
+    /// unreleased lossy VP8 encoder; the crate's own Cargo.toml comment
+    /// explains why a fork instead of the released crate) rather than
+    /// through `DynamicImage::write_to` - the `image` crate's own bundled
+    /// WebP encoder is lossless-only, which is exactly the bug this exists
+    /// to fix. `quality` (0.0-100.0) is used only when `lossless` is
+    /// `false`, converted to the integer 0-100 scale
+    /// `EncoderParams::lossy_quality` takes (rounding rather than
+    /// truncating, and clamping to the documented range - `lossy_quality >
+    /// 100` is a hard `panic!` inside the lossy VP8 quantiser, see
+    /// `lossy/encoder.rs`, so this clamp is load-bearing, not cosmetic,
+    /// even though `webp_quality`/`quality` are already range-validated at
+    /// URL-parse time and shouldn't reach here out of range).
     ///
     /// `pub` (rather than private) for two reasons: so `benches/encode.rs`
     /// can benchmark the exact lossy path production uses instead of
@@ -2140,25 +2294,33 @@ impl ImageService {
     /// later can be threaded straight through without changing this
     /// function's signature.
     ///
-    /// Normalizes `img` to `Rgba8` before handing it to
-    /// `webp::Encoder::from_rgba` rather than using
-    /// `webp::Encoder::from_image` directly: `from_image` only supports the
-    /// `Rgb8`/`Rgba8` `DynamicImage` variants and returns `Err` for
-    /// everything else, including `Luma8`/`LumaA8` - exactly what
-    /// `DynamicImage::grayscale()` (the `params.grayscale` filter applied
-    /// above) produces. Normalizing up front means a `grayscale=true` WebP
-    /// request encodes correctly instead of failing.
+    /// Normalizes `img` to `Rgba8` before encoding (same reasoning as the
+    /// old `webp` crate path this replaces): `image_webp::ColorType` has no
+    /// generic "whatever `DynamicImage` variant this happens to be" input,
+    /// so normalizing up front means a `grayscale=true` WebP request (which
+    /// produces `DynamicImage::ImageLuma8`) encodes correctly instead of
+    /// needing a match arm per source colour type.
+    ///
+    /// `EncoderParams` is `#[non_exhaustive]`, so it can't be built with
+    /// `..Default::default()` struct-literal syntax from outside the
+    /// crate - `Default::default()` plus field mutation is the only
+    /// available construction path.
     pub fn encode_webp(img: &DynamicImage, quality: f32, lossless: bool) -> Result<Vec<u8>> {
         let rgba = img.to_rgba8();
-        let encoder = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height());
+        let (width, height) = rgba.dimensions();
 
-        let memory = if lossless {
-            encoder.encode_lossless()
-        } else {
-            encoder.encode(quality)
-        };
+        let mut params = image_webp::EncoderParams::default();
+        params.use_lossy = !lossless;
+        params.lossy_quality = quality.round().clamp(0.0, 100.0) as u8;
 
-        Ok(memory.to_vec())
+        let mut buf = Vec::new();
+        let mut encoder = image_webp::WebPEncoder::new(&mut buf);
+        encoder.set_params(params);
+        encoder
+            .encode(rgba.as_raw(), width, height, image_webp::ColorType::Rgba8)
+            .context("image-webp: failed to encode WebP")?;
+
+        Ok(buf)
     }
 
     /// Encodes `img` to PNG via an explicit `PngEncoder::new_with_quality`
@@ -2220,45 +2382,87 @@ impl ImageService {
         Ok(buf.into_inner())
     }
 
-    /// Encodes `img` to JPEG via `mozjpeg::Compress`/libjpeg-turbo instead
-    /// of `image::codecs::jpeg::JpegEncoder` (#76). The `image` crate's own
-    /// JPEG encoder has no progressive-mode switch and hardcodes 4:2:2
-    /// chroma subsampling - verified against its actual public API
-    /// (`image-0.25.10/src/codecs/jpeg/encoder.rs`: exactly `new`,
-    /// `new_with_quality`, `set_pixel_density`, `encode`, `encode_image`,
-    /// no subsampling or progressive-mode knob at all) - so neither
-    /// `progressive` nor `no_subsampling` below could be threaded through
-    /// it. `mozjpeg` was already a dependency (added for DCT-scaled decode,
-    /// #63 stage 2, see `mozjpeg_decode` below) and its `Compress` type
-    /// exposes both directly, so this is a matter of routing JPEG *encode*
-    /// through the same crate rather than adding a new dependency.
+    /// Encodes `img` to JPEG via `jpeg_encoder::Encoder` (C-dependency removal) instead of
+    /// `mozjpeg::Compress`/libjpeg-turbo. The `image` crate's own JPEG
+    /// encoder still has no progressive-mode switch and hardcodes 4:2:2
+    /// chroma subsampling (unchanged since the mozjpeg-era doc comment this
+    /// replaces verified that against `image-0.25.10`'s actual public API),
+    /// so neither `progressive` nor `no_subsampling` below could be
+    /// threaded through it - `jpeg-encoder` carries both knobs directly
+    /// (`set_progressive`, `set_sampling_factor`), which is why this crate
+    /// depends on it rather than the bundled encoder.
     ///
     /// `no_subsampling: false` (the default, imgproxy's `jpgo:` `no_subsample`
-    /// slot left unset) reproduces 4:2:2 -
-    /// `set_chroma_sampling_pixel_sizes((2, 1), (2, 1))`, matching exactly
-    /// what `image`'s encoder always did - so a request that never touches
-    /// `jpgo:` gets byte-shape-equivalent chroma handling to before #76,
-    /// satisfying this issue's own "existing behaviour must not change
-    /// when unset" requirement. `no_subsampling: true` selects 4:4:4
-    /// (`(1, 1), (1, 1)`) - full chroma resolution, imgproxy's
-    /// `IMGPROXY_JPEG_NO_SUBSAMPLING`.
+    /// slot left unset) reproduces 4:2:2 - `SamplingFactor::F_2_1` (2
+    /// horizontal samples per chroma sample, 1 vertical), matching exactly
+    /// what both the old mozjpeg path and `image`'s own encoder always did.
+    /// This is set explicitly rather than left at `Encoder::new`'s own
+    /// quality-dependent default (4:2:0 below quality 90, 4:4:4 at/above
+    /// it - see that constructor's doc comment) specifically so this
+    /// crate's "existing behaviour must not change when `jpgo:` is unset"
+    /// requirement (#76) holds at every quality, not just >=90.
+    /// `no_subsampling: true` selects 4:4:4 (`SamplingFactor::F_1_1`) -
+    /// full chroma resolution, imgproxy's `IMGPROXY_JPEG_NO_SUBSAMPLING`.
+    /// `set_chroma_subsampling_method(Average)` is set alongside it - box-
+    /// averaging each 2x1/2x2 block, "matching libjpeg's h2v2_downsample"
+    /// per that method's own doc comment - rather than leaving the crate's
+    /// `Nearest` (fastest, but not what libjpeg-turbo ever produced)
+    /// default, since the whole point of `no_subsampling: false` above is
+    /// matching libjpeg-derived chroma handling as closely as a different
+    /// encoder can.
     ///
     /// `pub` (like `encode_webp` above) so `benches/encode.rs` can
     /// benchmark the exact path production uses.
     ///
-    /// Wrapped in `catch_unwind`, same reasoning as `mozjpeg_decode` below:
-    /// mozjpeg's error manager unwinds (panics) on a libjpeg-level error
-    /// rather than returning one, so a real encode failure must be caught
-    /// here instead of taking the whole worker thread down. `AssertUnwindSafe`
-    /// is sound for the same reason it is in `mozjpeg_decode`: every
-    /// captured value (`rgb`, `icc_owned`, `exif_owned`, the `Copy` scalars)
-    /// is either freshly-owned local data or `Copy`, none of it shared/
-    /// interior-mutable state that could be left torn by an unwind.
+    /// TODO(re-measure): `Cargo.toml`'s own comment on the `jpeg-encoder`
+    /// dependency states the expected cost of this swap - "it does not
+    /// implement trellis quantisation, so JPEGs get measurably larger at
+    /// matched quality" - and says this function "records the number". No
+    /// number is recorded here: re-measuring the real size/DSSIM delta
+    /// against mozjpeg's `JCP_FASTEST` profile (the baseline the removed
+    /// doc comment below this one used to compare against) needs the same
+    /// matched-DSSIM corpus method `adr/0003`/`adr/0005` used, which wasn't
+    /// run as part of this port. Do not invent a number here - leave this
+    /// TODO until it's actually measured.
     ///
-    /// `exif_metadata` (#5) is written the same way `icc_profile` already is.
-    /// See `encode_jpeg_inner`'s own comment at the `write_marker` call for
-    /// why mozjpeg needs the raw `APP1` bytes built by hand, unlike PNG/AVIF
-    /// which have a dedicated `ImageEncoder::set_exif_metadata`.
+    /// No `catch_unwind` wrapper (unlike the mozjpeg version this
+    /// replaces, and unlike every *decode*-direction function in this
+    /// file): mozjpeg's error manager unwound by design on any libjpeg-
+    /// level error; `jpeg_encoder::Encoder::encode` returns `Result`
+    /// instead and does not panic for the inputs this function ever
+    /// constructs, which was verified by reading the crate's source
+    /// (`jpeg-encoder 0.7.1`, `~/.cargo/registry`), not assumed:
+    /// - The only two `unreachable!()`s in `encoder.rs` (`init_rows`/
+    ///   `init_block_buffers`) branch on `self.components.len()`, which is
+    ///   populated solely from `JpegColorType::get_num_components()` - 1,
+    ///   3, or 4, fixed by the crate's own `ColorType` enum. This function
+    ///   only ever calls `encode(..., ColorType::Rgb)`, so that length is
+    ///   always exactly 3.
+    ///   - `quantization.rs`'s `QuantizationTableType::Custom(_) =>
+    ///     panic!(..)` is only reachable via `set_quantization_tables` with
+    ///     a custom table, which this function never calls (quality is
+    ///     controlled by `set_quality` alone, leaving
+    ///     `QuantizationTableType::Default` - the only variant this function
+    ///     ever installs - in effect for both components).
+    /// - The crate's `avx2` module (`avx2/ycbcr.rs`'s `panic!`/`unreachable!`)
+    ///   is `#[cfg(feature = "simd")]`-gated and not compiled in at all:
+    ///   `Cargo.toml` depends on `jpeg-encoder = "0.7"` with default
+    ///   features only (`default = ["std"]`; `simd` is opt-in and nothing
+    ///   else in this workspace's dependency graph requests it - confirmed
+    ///   via `Cargo.lock`, whose `jpeg-encoder` entry lists no additional
+    ///   dependencies the `simd` feature would pull in).
+    ///
+    /// `exif_metadata` (#5) and `icc_profile` are both wired through the
+    /// crate's own `add_exif_metadata`/`add_icc_profile` - unlike mozjpeg,
+    /// which had no EXIF API at all and needed the raw `APP1` marker built
+    /// by hand (see this function's own git history for that byte-level
+    /// detail), `jpeg-encoder` builds both markers itself. Errors from
+    /// either (oversized profile/blob) are ignored with `let _ = ...`,
+    /// same best-effort spirit as `encode_png`'s `set_icc_profile`/
+    /// `set_exif_metadata` calls elsewhere in this file and the mozjpeg
+    /// path's own silent-drop-when-oversized behaviour it reproduces - a
+    /// colour-profile or metadata blob that doesn't fit is not worth
+    /// failing the whole request over.
     pub fn encode_jpeg(
         img: &DynamicImage,
         quality: u8,
@@ -2268,192 +2472,38 @@ impl ImageService {
         exif_metadata: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
         let rgb = img.to_rgb8();
-        let icc_owned = icc_profile.map(<[u8]>::to_vec);
-        let exif_owned = exif_metadata.map(<[u8]>::to_vec);
-
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Self::encode_jpeg_inner(
-                &rgb,
-                quality,
-                progressive,
-                no_subsampling,
-                icc_owned.as_deref(),
-                exif_owned.as_deref(),
-            )
-        }))
-        .unwrap_or_else(|payload| {
-            let msg = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
-                .unwrap_or_else(|| "mozjpeg panicked with a non-string payload".to_string());
-            Err(anyhow::anyhow!("mozjpeg encode panicked: {msg}"))
-        })
-    }
-
-    fn encode_jpeg_inner(
-        rgb: &RgbImage,
-        quality: u8,
-        progressive: bool,
-        no_subsampling: bool,
-        icc_profile: Option<&[u8]>,
-        exif_metadata: Option<&[u8]>,
-    ) -> Result<Vec<u8>> {
         let (width, height) = rgb.dimensions();
-
-        let mut compress = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
-        compress.set_size(width as usize, height as usize);
-
-        // Non-progressive path only: drop to mozjpeg's `JCP_FASTEST`
-        // profile (`set_fastest_defaults`, "reset to libjpeg v6 settings ...
-        // identical with libjpeg-turbo") before anything else is
-        // configured, so the size/quality-affecting calls below apply on
-        // top of it rather than being clobbered by it - `set_fastest_defaults`
-        // re-runs `jpeg_set_defaults` internally, which resets quality,
-        // colour-space-derived sampling factors, and everything else this
-        // function sets afterward (`mozjpeg-sys-2.2.3/vendor/jcparam.c`'s
-        // `jpeg_set_defaults`).
-        //
-        // Why: mozjpeg's *default* profile from `Compress::new` is
-        // `JCP_MAX_COMPRESSION`, which turns on trellis quantisation
-        // (`master->trellis_quant = true`) unconditionally at
-        // `jpeg_set_defaults` time - regardless of the progressive/
-        // `set_optimize_scans` setting below, since that's a separate,
-        // later, dynamic bool param that never touches `trellis_quant`
-        // (confirmed by reading `jcparam.c` directly: `trellis_quant =
-        // (compress_profile == JCP_MAX_COMPRESSION)`, set once, no public
-        // `mozjpeg` crate API to toggle it independently - the only two
-        // profiles the crate exposes are `JCP_MAX_COMPRESSION` and
-        // `JCP_FASTEST`). Trellis is real CPU, not free: `encode/jpeg_baseline`
-        // measured 9.61ms with it on vs 3.07ms for the old `image`-crate
-        // encoder it replaced (#76's own regression, ~3x, would fail this
-        // repo's 15% bench gate as-is).
-        //
-        // Measured on the Kodak True Color corpus (24 real photos, same
-        // corpus/DSSIM method as `adr/0003-webp-measurement.md`) whether
-        // that CPU actually buys smaller files at *matched* DSSIM (not
-        // matched nominal quality number - see that ADR for why nominal
-        // comparisons are invalid here): current `JCP_MAX_COMPRESSION`
-        // default is ~12% smaller than the old `image`-crate encoder
-        // (median ratio 0.881) but costs 3-8x its encode time. Dropping to
-        // `JCP_FASTEST` (this branch) is still ~5% smaller than the old
-        // `image`-crate encoder (median ratio 0.946) while being 3-4x
-        // *faster* than that encoder too (mozjpeg/libjpeg-turbo's SIMD C
-        // beats `image`'s pure-Rust baseline encoder even before mozjpeg's
-        // own extensions enter the picture) - a strict win on both axes
-        // over the pre-#76 baseline, and at the *same* nominal quality
-        // number `JCP_FASTEST` even scores a lower (better) mean DSSIM
-        // than the current `JCP_MAX_COMPRESSION` default (0.001787 vs
-        // 0.002236 at quality 75) - trellis trades some visual fidelity
-        // for extra size reduction at a fixed quality number, so removing
-        // it does not make default output worse, only smaller-but-less-so.
-        // Full measurement table in this change's own report.
-        //
-        // Progressive output (explicit `jpgo:progressive` request) keeps
-        // the full `JCP_MAX_COMPRESSION` profile below - progressive is
-        // already an opt-in, pay-for-what-you-use path, so its extra cost
-        // is the caller's choice, not a default everyone pays.
-        if !progressive {
-            compress.set_fastest_defaults();
-        }
-
-        // 4:2:2 == `(2, 1)` for both Cb and Cr - this crate's pre-#76
-        // default, matching `image::codecs::jpeg::JpegEncoder`'s hardcoded
-        // subsampling exactly (see this function's own doc comment above).
-        // 4:4:4 == `(1, 1)` - full chroma resolution. Set before
-        // `set_progressive_mode` below so mozjpeg's default progressive
-        // scan script (`jpeg_simple_progression`) is built against the
-        // sampling factors actually in effect, not libjpeg's own defaults.
-        let subsampling_px_size = if no_subsampling { (1, 1) } else { (2, 1) };
-        compress.set_chroma_sampling_pixel_sizes(subsampling_px_size, subsampling_px_size);
-
-        compress.set_quality(f32::from(quality));
-
-        // mozjpeg's own default (`Compress::new`'s `jpeg_set_defaults`,
-        // under its default `JCP_MAX_COMPRESSION` compress profile)
-        // already builds and installs a progressive scan script - real
-        // MozJPEG's whole "smaller by default" premise, confirmed against
-        // `mozjpeg-sys-2.2.3/vendor/jcparam.c`'s `jpeg_set_defaults`: it
-        // sets `master->optimize_scans = TRUE` and calls
-        // `jpeg_simple_progression(cinfo)` unconditionally at construction
-        // time. So an *unset* `progressive` here must actively opt back
-        // *out* of that default to reproduce this crate's pre-#76 baseline
-        // (non-progressive) output - it is not, as `set_progressive_mode`'s
-        // own "you can only turn it on" doc comment might suggest, already
-        // the starting point. `set_optimize_scans(false)` is what
-        // `jcmaster.c`'s `jinit_c_master_control` actually keys off of at
-        // `start_compress` time (`cinfo->master->optimize_scans` forces
-        // `progressive_mode = TRUE` in `validate_script` regardless of
-        // `scan_info`'s contents) - and, on the `false` path, also nulls
-        // `cinfo->scan_info`, which `jinit_c_master_control` separately
-        // checks (`scan_info == NULL` -> `progressive_mode = FALSE,
-        // num_scans = 1`) - so `set_optimize_scans(false)` is the one call
-        // that actually forces real baseline sequential. Verified
-        // empirically against this exact mozjpeg version: without it, a
-        // "baseline" and a "progressive" encode of the same pixels at the
-        // same quality produced byte-identical output (both already
-        // progressive) - this is not merely a doc-derived belief.
-        if progressive {
-            compress.set_progressive_mode();
-        } else {
-            compress.set_optimize_scans(false);
-        }
+        let width = u16::try_from(width)
+            .context("jpeg-encoder: image width exceeds the JPEG format's 65535px limit")?;
+        let height = u16::try_from(height)
+            .context("jpeg-encoder: image height exceeds the JPEG format's 65535px limit")?;
 
         let estimated_size = (width as usize).saturating_mul(height as usize) / 2;
-        let mut started = compress
-            .start_compress(Vec::with_capacity(estimated_size))
-            .context("mozjpeg: failed to start compression")?;
+        let mut buf = Vec::with_capacity(estimated_size);
+
+        let mut encoder = jpeg_encoder::Encoder::new(&mut buf, quality);
+
+        let sampling_factor = if no_subsampling {
+            jpeg_encoder::SamplingFactor::F_1_1
+        } else {
+            jpeg_encoder::SamplingFactor::F_2_1
+        };
+        encoder.set_sampling_factor(sampling_factor);
+        encoder.set_chroma_subsampling_method(jpeg_encoder::ChromaSubsamplingMethod::Average);
+        encoder.set_progressive(progressive);
 
         if let Some(icc) = icc_profile.filter(|icc| !icc.is_empty()) {
-            // Same best-effort spirit as the PNG/pre-#76 JPEG branches'
-            // `set_icc_profile` calls elsewhere in this file: a source ICC
-            // profile is a colour-fidelity nicety, not something worth
-            // failing the whole request over. `write_icc_profile` itself
-            // has no fallible return (any failure surfaces as a libjpeg
-            // error caught by this function's `catch_unwind` wrapper), so
-            // there's nothing to ignore here beyond the empty-profile
-            // guard above (`write_icc_profile` panics on empty input).
-            started.write_icc_profile(icc);
+            let _ = encoder.add_icc_profile(icc);
         }
-
         if let Some(exif) = exif_metadata.filter(|exif| !exif.is_empty()) {
-            // #5: mozjpeg has no dedicated EXIF API (unlike its
-            // `write_icc_profile` for `APP2`/ICC just above), so the `APP1`
-            // segment is built by hand: a 6-byte `"Exif\0\0"` marker
-            // (JPEG/EXIF's own container convention, JEITA CP-3451) followed
-            // by the raw TIFF-formatted bytes `ImageDecoder::exif_metadata`
-            // returns (that trait's own doc comment: "the payload...
-            // starting at the TIFF header", i.e. *without* the marker
-            // prefix - confirmed empirically: `image::codecs::jpeg::encoder`'s
-            // `write_exif` prepends the identical constant before handing
-            // its own `self.exif` to `write_segment`, so this reproduces
-            // that encoder's on-the-wire format exactly).
-            //
-            // Capped at the same `MAX_DATA_BYTES_IN_MARKER` mozjpeg itself
-            // uses inside `write_icc_profile` (65533 total marker bytes,
-            // minus this crate's own 6-byte prefix rather than
-            // `write_icc_profile`'s 14-byte `ICC_PROFILE\0` + chunk-index
-            // overhead) - unlike ICC, EXIF has no standard multi-segment
-            // chunking convention to fall back on for an oversized blob, so
-            // an over-limit blob is silently dropped (best-effort, same
-            // spirit as the ICC branch above) rather than writing a
-            // corrupt/truncated marker or panicking.
-            const MAX_EXIF_MARKER_BYTES: usize = 65533 - b"Exif\0\0".len();
-            if exif.len() <= MAX_EXIF_MARKER_BYTES {
-                let mut app1 = Vec::with_capacity(6 + exif.len());
-                app1.extend_from_slice(b"Exif\0\0");
-                app1.extend_from_slice(exif);
-                started.write_marker(mozjpeg::Marker::APP(1), &app1);
-            }
+            let _ = encoder.add_exif_metadata(exif);
         }
 
-        started
-            .write_scanlines(rgb.as_raw())
-            .context("mozjpeg: failed to write scanlines")?;
+        encoder
+            .encode(rgb.as_raw(), width, height, jpeg_encoder::ColorType::Rgb)
+            .context("jpeg-encoder: failed to encode JPEG")?;
 
-        started
-            .finish()
-            .context("mozjpeg: failed to finish compression")
+        Ok(buf)
     }
 
     /// Rewrites the EXIF `Orientation` tag (0x0112) inside a raw,
@@ -2679,9 +2729,9 @@ impl ImageService {
     /// `min_height` already describe the *final*, post-rotation image (see
     /// that function's doc comment for the full reasoning imgproxy's own
     /// `ExtractGeometry` establishes), and `max_output_width`/
-    /// `max_output_height` are configured in that same final-output sense
-    /// - so `width` is always compared against `max_output_width`
-    /// regardless of `rotate`, with no swap in between.
+    /// `max_output_height` are configured in that same final-output sense -
+    /// so `width` is always compared against `max_output_width` regardless of
+    /// `rotate`, with no swap in between.
     fn check_output_dimensions(params: &ResizeQuery, config: &PerformanceConfig) -> Result<()> {
         Self::check_axis_bound(
             params.width,
@@ -3123,29 +3173,62 @@ impl ImageService {
             return crate::services::image::avif_codec::peek_dimensions(image_bytes);
         }
 
+        // WebP has to be special-cased for the same reason AVIF does, and
+        // for a newly-introduced one: dropping `image`'s own "webp" feature
+        // (so exactly one WebP implementation is linked in) means
+        // `ImageReader` cannot parse a WebP header at all any more, and
+        // fails with "The image format WebP is not supported".
+        //
+        // That failure mode is worth being explicit about, because this is a
+        // security guard, not a convenience: `peek_dimensions` is what lets
+        // an oversized source be rejected *before* it is decoded. Had this
+        // been left to fall through to `make_reader`, every WebP source
+        // would error out rather than quietly skipping the check - noisy,
+        // but not unsafe. Routing it through the decoder that actually
+        // supports WebP keeps the guard working.
+        //
+        // `WebPDecoder::new` parses the RIFF/VP8X header only; it allocates
+        // no pixel buffer and decodes no frame, so this is as cheap and as
+        // bomb-safe as `into_dimensions` is for the other formats.
+        if format == Some(ImageFormat::WebP) {
+            let decoder = image_webp::WebPDecoder::new(Cursor::new(image_bytes))
+                .context("Failed to read WebP header")?;
+            return Ok(decoder.dimensions());
+        }
+
         Self::make_reader(image_bytes, format)?
             .into_dimensions()
             .context("Failed to read image dimensions")
     }
 
     /// Decodes `image_bytes`, enforcing every guard `decode_with_image_crate`
-    /// carries, with one addition (#63 stage 2, extended by #67): for JPEG,
-    /// tries a decode through mozjpeg/libjpeg-turbo first - DCT-scaled when
-    /// a resize makes a smaller decode safe (decoding directly at a
-    /// fraction of the source resolution instead of always decoding
-    /// full-size and discarding most of the data during resize), full-size
-    /// otherwise. #67 measured mozjpeg's full-size decode ~1.5x faster than
-    /// the `image`-crate/zune-jpeg path too, not just the scaled case #63
-    /// stage 2 covered - see `decode_jpeg_scaled`'s doc comment for the
-    /// measured win either way. PNG and WebP are untouched, always going
-    /// straight to `decode_with_image_crate`.
+    /// carries, with one addition (#63 stage 2, extended by #67, the C-dependency removal): for
+    /// JPEG, tries a decode through `jpeg_decoder::Decoder` first -
+    /// DCT-scaled when a resize makes a smaller decode safe (decoding
+    /// directly at a fraction of the source resolution instead of always
+    /// decoding full-size and discarding most of the data during resize),
+    /// full-size otherwise. See `decode_jpeg_scaled`'s doc comment for the
+    /// measured win either way. PNG is untouched, always going straight to
+    /// `decode_with_image_crate`.
     ///
-    /// If the mozjpeg path fails for any reason - including a caught panic,
-    /// see `mozjpeg_decode` - this falls back to `decode_with_image_crate`
-    /// (the exact same full-decode path every non-JPEG format already uses)
-    /// rather than failing the request outright (#4), logging a warning so a
-    /// real regression in the mozjpeg path stays visible instead of quietly
-    /// becoming the normal path for every request.
+    /// If the JPEG path fails for any reason - including a caught panic,
+    /// see `jpeg_scaled_decode` - this falls back to
+    /// `decode_with_image_crate` (the exact same full-decode path PNG
+    /// already uses) rather than failing the request outright (#4), logging
+    /// a warning so a real regression in that path stays visible instead of
+    /// quietly becoming the normal path for every request.
+    ///
+    /// WebP has no such fallback (C-dependency removal): `image`'s own "webp" feature was
+    /// dropped from `Cargo.toml` (every WebP direction now goes through
+    /// `image_webp`/`vaam-image-webp` directly, see that dependency's own
+    /// comment), so `decode_with_image_crate`'s `ImageReader::into_decoder`
+    /// can no longer construct a WebP decoder at all - it would return a
+    /// generic "format not supported" `ImageError::Unsupported` for *every*
+    /// WebP source, masking the real failure (a genuine decode error, or
+    /// #26's resolution-limit guard tripping) behind a useless one. A WebP
+    /// decode failure is therefore returned directly, the same as AVIF
+    /// below, rather than through a fallback that could only ever fail a
+    /// second time less informatively.
     ///
     /// #88: `params.strip_metadata` is resolved to a plain `want_metadata`
     /// bool exactly once, here, and threaded into both decode paths below,
@@ -3164,28 +3247,17 @@ impl ImageService {
                 Err(err) => {
                     warn!(
                         error = %err,
-                        "mozjpeg scaled JPEG decode failed; falling back to full image-crate decode"
+                        "jpeg-decoder scaled JPEG decode failed; falling back to full image-crate decode"
                     );
                 }
             }
         }
 
-        // #66: libwebp instead of `image-webp`'s pure-Rust decoder - see
-        // `decode_webp_libwebp`'s own doc comment for the measured win and
-        // every guard preserved. Same graceful-fallback spirit as JPEG
-        // above: a real libwebp failure falls back to
-        // `decode_with_image_crate` (the exact pre-#66 WebP decode path)
-        // rather than failing the request outright.
+        // the C-dependency removal: no fallback here - see this function's own doc comment for
+        // why `decode_with_image_crate` can no longer serve as one for
+        // WebP specifically.
         if format == Some(ImageFormat::WebP) {
-            match Self::decode_webp_libwebp(image_bytes, max_src_resolution_mp) {
-                Ok(result) => return Ok(result),
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        "libwebp decode failed; falling back to full image-crate decode"
-                    );
-                }
-            }
+            return Self::decode_webp(image_bytes, max_src_resolution_mp);
         }
 
         // #67 (AVIF decode): the only AVIF decode path this crate has -
@@ -3299,158 +3371,154 @@ impl ImageService {
         Ok((img, orientation, icc_profile, exif_metadata))
     }
 
-    /// WebP-only pixel decode via `libwebp` (real libwebp, through the
-    /// `webp` crate's `Decoder`) instead of `image-webp`'s pure-Rust VP8/
-    /// VP8L decoder - measured 2.5-2.8x faster on the Kodak corpus (24 real
-    /// photos, darwin/arm64: 11.10ms -> 4.53ms median at native resolution)
-    /// with DSSIM delta 0.000000 against `image-webp`'s output on every
-    /// image (pixel-identical), reproduced against this exact code path -
-    /// see this change's own report for the measurement, not just the
-    /// prior survey it was based on.
+    /// WebP-only decode via `image_webp::WebPDecoder` (the C-dependency removal,
+    /// `vaam-image-webp` - see `Cargo.toml`'s own comment on that
+    /// dependency), replacing both the real-libwebp `webp`-crate pixel
+    /// decode this file used to run *and* the separate `image`-crate
+    /// `WebPDecoder` that used to sit alongside it purely for header/
+    /// metadata reads: `image`'s own "webp" feature is gone, so there is
+    /// now exactly one WebP decoder linked into this binary, and it reads
+    /// header, metadata and pixels alike.
     ///
-    /// Mirrors `decode_jpeg_scaled`'s structure exactly: an `image`-crate
-    /// `WebPDecoder` is opened first, purely for the header-derived data
-    /// libwebp's one-shot `WebPDecodeRGB(A)` API has no equivalent for -
-    /// #33's EXIF `Orientation` (WebP has no EXIF-orientation convention in
-    /// practice, but `WebPDecoder::orientation()` is called for the same
-    /// "read every metadata field the trait offers, uniformly" reason every
-    /// other decode path in this file does) and #5's ICC profile / raw EXIF
-    /// blob - all three must be read off the `image`-crate decoder before
-    /// it's dropped, since libwebp's decode call never sees them at all.
-    /// #26's allocation guard (`Limits::reserve` against
-    /// `decoder.total_bytes()`) is applied to this throwaway decoder before
-    /// any pixel data is decoded through *either* decoder, same as
-    /// `decode_jpeg_scaled`.
+    /// The #26 DoS guard - reject an oversized source *before* allocating
+    /// its decoded pixel buffer - is preserved in the same relative order
+    /// it always was: `image_webp::WebPDecoder::new` parses only the RIFF
+    /// chunk directory (dimensions, flags, chunk offsets), not any pixel
+    /// data, so `Self::check_source_resolution` runs against `dimensions()`
+    /// immediately after construction and strictly before
+    /// `output_buffer_size()`/`read_image` are ever called - the exact
+    /// point the old `image`-crate-then-libwebp two-decoder version
+    /// enforced it too, just against one decoder now instead of two.
+    /// `set_memory_limit` additionally caps the ICC/EXIF/XMP chunk reads
+    /// (`WebPDecoder::set_memory_limit`'s own doc comment: those are the
+    /// allocations it actually bounds today) to the same `max_alloc` this
+    /// crate already derives from `max_src_resolution_mp` for every other
+    /// codec via `Self::build_decode_limits`.
     ///
-    /// The actual pixel decode is `Self::libwebp_decode`, wrapped in
-    /// `catch_unwind` - see that function's own doc comment for why, even
-    /// though libwebp's C API itself returns null/`None` on failure rather
-    /// than unwinding the way mozjpeg's error manager does; the guard here
-    /// is defensive-in-depth against a debug assertion or buffer-shape
-    /// mismatch inside the `webp` crate's own Rust wrapper code (e.g.
-    /// `WebPImage::to_image`'s `.expect(..)`, which this function avoids
-    /// calling directly for exactly that reason - see `libwebp_decode`'s
-    /// own doc comment), not because libwebp's C decode functions are
-    /// expected to panic.
+    /// WebP has no EXIF-orientation convention in practice, but is handled
+    /// uniformly with every other decode path anyway: `image_webp` exposes
+    /// only the raw `EXIF` chunk bytes, not a parsed `Orientation` (that
+    /// translation lived in `image`'s now-removed `codecs::webp` wrapper -
+    /// `Orientation::from_exif_chunk`, reproduced here by hand against the
+    /// same public `image` API function that wrapper called).
     ///
-    /// Every guard `decode_with_image_crate` carries - the #26 resolution
-    /// cap (checked by the caller, `decode_with_limits`'s caller, against
-    /// header-peeked dimensions *before* this function is ever reached) and
-    /// the allocation-reservation guard above - is preserved here too.
-    /// libwebp's one-shot decode API takes no `image::Limits`-equivalent
-    /// parameter of its own, so there is nothing further to configure on
-    /// that side; the header-peek-before-decode ordering is what actually
-    /// keeps a WebP decompression bomb from reaching this function with an
-    /// unchecked resolution in the first place (verified by
-    /// `webp_decompression_bomb_is_rejected_before_full_decode` below).
+    /// Wrapped in `catch_unwind`, same defensive spirit as
+    /// `jpeg_scaled_decode`: nothing in `image_webp` is *known* to panic on
+    /// malformed input, but this is attacker-supplied bytes reaching a
+    /// pure-Rust decoder with a non-trivial `unwrap`/`expect` surface (not
+    /// audited exhaustively - unlike `encode_jpeg`'s equivalent removal
+    /// above, this is decode-direction, untrusted-input code, where the
+    /// cost of an unnecessary defensive wrapper is far lower than the cost
+    /// of being wrong about "never panics"), and `Cargo.toml`'s
+    /// `panic = "unwind"` (kept for #29) is what makes any such panic
+    /// catchable at all rather than aborting the process.
     ///
     /// Animated WebP is untouched: `process_image_blocking_with_limits_and_watermark`'s
     /// `wants_animatable_output` branch already intercepts any WebP source
     /// with more than one frame via `decode_animation_source`'s own
-    /// `WebPDecoder::has_animation()` check, *before* `decode_with_limits`
-    /// (and therefore this function) is ever reached for that source - see
-    /// `decode_animation_source`'s doc comment. `libwebp_decode`'s own
-    /// `webp::Decoder::decode()` call additionally refuses an animated
-    /// bitstream on its own (`features.has_animation()` -> `None`,
-    /// `webp-0.3.1/src/decoder.rs`), so a genuinely-animated WebP reaching
-    /// this function by some other path would fail closed (falling back to
-    /// `decode_with_image_crate` via `decode_with_limits`'s own fallback,
-    /// same as any other libwebp failure) rather than silently decoding
-    /// only its first frame as if it were a still image.
-    fn decode_webp_libwebp(image_bytes: &[u8], max_src_resolution_mp: u64) -> Result<DecodedImage> {
-        let mut reader = Self::make_reader(image_bytes, Some(ImageFormat::WebP))?;
-        let limits = Self::build_decode_limits(max_src_resolution_mp);
-        reader.limits(limits.clone());
-
-        let mut decoder = reader
-            .into_decoder()
-            .context("Failed to construct WebP decoder for header read")?;
-
-        let mut reserved_limits = limits;
-        reserved_limits
-            .reserve(decoder.total_bytes())
-            .context("Failed to decode image")?;
-        decoder
-            .set_limits(reserved_limits)
-            .context("Failed to decode image")?;
-
-        let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-        let icc_profile = decoder.icc_profile().ok().flatten();
-        let exif_metadata = decoder.exif_metadata().ok().flatten();
-        drop(decoder);
-
-        let img = Self::libwebp_decode(image_bytes)?;
-        Ok((img, orientation, icc_profile, exif_metadata))
-    }
-
-    /// Runs the actual libwebp pixel decode, producing an `Rgb8`/`Rgba8`
-    /// `DynamicImage` depending on whether the source has an alpha channel.
-    ///
-    /// Wrapped in `catch_unwind`, same defensive spirit as
-    /// `mozjpeg_decode`: nothing in the `webp` crate or `libwebp-sys` is
-    /// known to panic on malformed input (unlike mozjpeg's documented
-    /// unwind-on-error design), but this is attacker-supplied input
-    /// reaching a C library through an FFI boundary, and `Cargo.toml`'s
-    /// `panic = "unwind"` (kept for #29) is what makes any such panic
-    /// catchable at all rather than aborting the process - the same
-    /// invariant every other codec entry point in this file relies on.
-    /// `AssertUnwindSafe` is sound here for the same reason it is in
-    /// `mozjpeg_decode`: `image_bytes` is a shared `&[u8]` with no interior
-    /// mutability to leave torn.
-    ///
-    /// Deliberately builds the `image::RgbImage`/`RgbaImage` by hand via
-    /// `from_raw` (which returns `Option`, i.e. a normal `Err` on a length
-    /// mismatch) rather than calling `WebPImage::to_image()` - that method
-    /// exists on the `webp` crate's own `WebPImage` type but calls
-    /// `.expect("ImageBuffer couldn't be created")` internally
-    /// (`webp-0.3.1/src/shared.rs`), which would turn a shape mismatch into
-    /// an uncatchable-by-design panic path instead of a graceful `Result`.
-    ///
-    /// `pub` (like `mozjpeg_decode`/`encode_webp`/`encode_jpeg` above) so
-    /// `benches/decode.rs` can benchmark the exact WebP decode path
-    /// production uses (#66) instead of the `image::load_from_memory_with_format`
-    /// call that was representative before this change but now only
-    /// reflects the pre-#66 decoder.
-    pub fn libwebp_decode(image_bytes: &[u8]) -> Result<DynamicImage> {
+    /// `WebPDecoder::is_animated()` check, *before* `decode_with_limits`
+    /// (and therefore this function) is ever reached for that source.
+    fn decode_webp(image_bytes: &[u8], max_src_resolution_mp: u64) -> Result<DecodedImage> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Self::libwebp_decode_inner(image_bytes)
+            Self::decode_webp_inner(image_bytes, max_src_resolution_mp)
         }))
         .unwrap_or_else(|payload| {
             let msg = payload
                 .downcast_ref::<String>()
                 .cloned()
                 .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
-                .unwrap_or_else(|| "libwebp decode panicked with a non-string payload".to_string());
-            Err(anyhow::anyhow!("libwebp decode panicked: {msg}"))
+                .unwrap_or_else(|| {
+                    "image-webp decode panicked with a non-string payload".to_string()
+                });
+            Err(anyhow::anyhow!("image-webp decode panicked: {msg}"))
         })
     }
 
-    fn libwebp_decode_inner(image_bytes: &[u8]) -> Result<DynamicImage> {
-        let decoder = webp::Decoder::new(image_bytes);
-        let image = decoder
-            .decode()
-            .ok_or_else(|| anyhow::anyhow!("libwebp: failed to decode WebP image"))?;
-        let (width, height) = (image.width(), image.height());
+    fn decode_webp_inner(image_bytes: &[u8], max_src_resolution_mp: u64) -> Result<DecodedImage> {
+        let mut decoder = image_webp::WebPDecoder::new(Cursor::new(image_bytes))
+            .context("image-webp: failed to read WebP header")?;
 
-        if image.is_alpha() {
-            let buf = image::RgbaImage::from_raw(width, height, image.to_vec())
-                .context("libwebp: decoded RGBA buffer size mismatch")?;
-            Ok(DynamicImage::ImageRgba8(buf))
+        let (width, height) = decoder.dimensions();
+        Self::check_source_resolution(width, height, max_src_resolution_mp)?;
+
+        if let Some(max_alloc) = Self::build_decode_limits(max_src_resolution_mp).max_alloc {
+            decoder.set_memory_limit(usize::try_from(max_alloc).unwrap_or(usize::MAX));
+        }
+
+        let icc_profile = decoder.icc_profile().ok().flatten();
+        let exif_metadata = decoder.exif_metadata().ok().flatten();
+        let orientation = exif_metadata
+            .as_ref()
+            .and_then(|exif| Orientation::from_exif_chunk(exif))
+            .unwrap_or(Orientation::NoTransforms);
+
+        let img = Self::read_webp_pixels(&mut decoder)?;
+        Ok((img, orientation, icc_profile, exif_metadata))
+    }
+
+    /// Runs the actual `image_webp` pixel decode, producing an `Rgb8`/
+    /// `Rgba8` `DynamicImage` depending on whether the source has an alpha
+    /// channel. Shared by `Self::decode_webp_inner` above and
+    /// `Self::decode_webp_pixels` below so the buffer-allocate-then-
+    /// `read_image`-then-convert sequence exists in exactly one place.
+    fn read_webp_pixels<R: std::io::BufRead + std::io::Seek>(
+        decoder: &mut image_webp::WebPDecoder<R>,
+    ) -> Result<DynamicImage> {
+        let (width, height) = decoder.dimensions();
+        let has_alpha = decoder.has_alpha();
+        let output_buffer_size = decoder
+            .output_buffer_size()
+            .context("image-webp: image dimensions overflow the output buffer size")?;
+        let mut buf = vec![0u8; output_buffer_size];
+        decoder
+            .read_image(&mut buf)
+            .context("image-webp: failed to decode WebP pixels")?;
+
+        if has_alpha {
+            image::RgbaImage::from_raw(width, height, buf)
+                .map(DynamicImage::ImageRgba8)
+                .context("image-webp: decoded RGBA buffer size mismatch")
         } else {
-            let buf = image::RgbImage::from_raw(width, height, image.to_vec())
-                .context("libwebp: decoded RGB buffer size mismatch")?;
-            Ok(DynamicImage::ImageRgb8(buf))
+            image::RgbImage::from_raw(width, height, buf)
+                .map(DynamicImage::ImageRgb8)
+                .context("image-webp: decoded RGB buffer size mismatch")
         }
     }
 
-    /// JPEG-only DCT-scaled decode via mozjpeg/libjpeg-turbo (#63 stage 2):
-    /// decodes directly at a reduced resolution using libjpeg's native
-    /// `scale_num/8` support, instead of always decoding at full resolution
-    /// and discarding most of the data during resize. This is the large-
+    /// WebP-only pixel decode with no resolution guard of its own - callers
+    /// that need the #26 DoS guard must go through `Self::decode_webp`
+    /// instead. `pub` (like `jpeg_scaled_decode`/`encode_webp`/
+    /// `encode_jpeg` above) so `benches/decode.rs` can benchmark the exact
+    /// WebP pixel-decode path production uses, the same role
+    /// `libwebp_decode` played before the C-dependency removal.
+    pub fn decode_webp_pixels(image_bytes: &[u8]) -> Result<DynamicImage> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut decoder = image_webp::WebPDecoder::new(Cursor::new(image_bytes))
+                .context("image-webp: failed to read WebP header")?;
+            Self::read_webp_pixels(&mut decoder)
+        }))
+        .unwrap_or_else(|payload| {
+            let msg = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_else(|| {
+                    "image-webp decode panicked with a non-string payload".to_string()
+                });
+            Err(anyhow::anyhow!("image-webp decode panicked: {msg}"))
+        })
+    }
+
+    /// JPEG-only DCT-scaled decode via `jpeg_decoder::Decoder` (#63 stage
+    /// 2, reimplemented on `jpeg_decoder` for the C-dependency removal): decodes directly at a
+    /// reduced resolution using `Decoder::scale`'s native 1/8-1/1 DCT
+    /// scaling, instead of always decoding at full resolution and
+    /// discarding most of the data during resize. This is the large-
     /// downscale path that drove the p90/p99 gap against imgproxy (see the
     /// #63 issue thread) - measured 58.03ms (full decode + resize) vs
     /// 26.21ms (1/8-scale decode + resize) for a 4K source to a 200x113
-    /// thumbnail, 2.21x.
+    /// thumbnail, 2.21x (the original mozjpeg-based measurement; the C-dependency removal did
+    /// not re-run it - see `jpeg_scaled_decode`'s own doc comment).
     ///
     /// Every guard `decode_with_image_crate` carries is preserved here too.
     /// An `image`-crate `ImageDecoder` is always opened first, purely to
@@ -3464,14 +3532,16 @@ impl ImageService {
     /// - #33's EXIF orientation and ICC profile are read off it too, and so
     ///   (#5) is the raw EXIF metadata blob.
     ///
-    /// Every JPEG decode - DCT-scaled or not - hands off to mozjpeg for the
-    /// actual pixel decode (#67): `scale_num == 8` just means
-    /// `mozjpeg_decode` is called with no DCT reduction, rather than the
-    /// `image`-crate/zune-jpeg decoder being reused for that case as it was
-    /// before #67. See the retired-rationale comment at the `drop(decoder)`
-    /// call site below for why, and `select_jpeg_dct_scale` for how the
-    /// scale factor itself is chosen - the "never decode smaller than the
-    /// target" requirement lives there.
+    /// Every JPEG decode - DCT-scaled or not - hands off to
+    /// `jpeg_scaled_decode` for the actual pixel decode: `scale_num == 8`
+    /// just means it's called with no DCT reduction, rather than the
+    /// `image`-crate/zune-jpeg decoder being reused for that case. See the
+    /// retired-rationale comment at the `drop(decoder)` call site below for
+    /// why (that history is about mozjpeg specifically but the "one decoder
+    /// regardless of scale" conclusion still holds under `jpeg_decoder`),
+    /// and `select_jpeg_dct_scale` for how the scale factor itself is
+    /// chosen - the "never decode smaller than the target" requirement
+    /// lives there.
     fn decode_jpeg_scaled(
         image_bytes: &[u8],
         max_src_resolution_mp: u64,
@@ -3568,8 +3638,8 @@ impl ImageService {
         );
 
         // Map the target back into the JPEG's raw (pre-rotation) axis space:
-        // mozjpeg's `scale()` operates on the raw raster as stored in the
-        // file, before any EXIF rotation - that correction happens
+        // `jpeg_decoder::Decoder::scale()` operates on the raw raster as
+        // stored in the file, before any EXIF rotation - that correction happens
         // afterwards, in Rust, exactly as it already did before this change
         // (`img.apply_orientation(orientation)` in
         // `process_image_blocking_with_limits`).
@@ -3592,42 +3662,49 @@ impl ImageService {
         // resize was requested at all, or the requested output is close
         // enough to source resolution that even the gentlest 1/2 scale
         // would decode below target) by reusing the already-open
-        // `image`-crate decoder instead of opening mozjpeg, on the theory
-        // that mozjpeg would buy nothing for a full-size decode and that
-        // doing so kept output byte-for-byte identical to
-        // `decode_with_image_crate` rather than introducing a second JPEG
-        // decoder's rounding into a path that was never going to benefit.
+        // `image`-crate decoder instead of opening a second JPEG decoder,
+        // on the theory that the second decoder would buy nothing for a
+        // full-size decode and that doing so kept output byte-for-byte
+        // identical to `decode_with_image_crate` rather than introducing a
+        // second decoder's rounding into a path that was never going to
+        // benefit.
         //
         // Both premises turned out wrong once actually measured (#67, not
-        // assumed): `image` 0.25.10 pulled in `zune-jpeg` 0.5.x, whose
-        // generic `ZByteReaderTrait` redesign made the per-byte
-        // end-of-stream check in its Huffman bit-refill loop fallible
-        // (`reader.eof()?`) where 0.4.x's was an infallible, immutable
-        // `bool` - a real cost paid on every byte of entropy-coded data,
-        // even for zune-jpeg's own in-memory reader. Measured on 36 real
-        // photographs (24-image Kodak corpus + 3 picsum.photos sources x 4
-        // resolutions, 640x360 through 3840x2160 - not the synthetic
-        // gradient-plus-noise fixture `benches/fixtures.rs` uses elsewhere,
-        // per the same reasoning `adr/0003`/`adr/0004`/`adr/0005` all
-        // document - 0004's numbers are superseded but its method, which
-        // is what is cited here, is not), mozjpeg's
-        // full-size (`scale(8)`) decode is consistently ~1.5x faster than
-        // the `image`-crate path across every resolution bucket - see this
-        // change's own report for the full table. "Byte-for-byte identical"
-        // was also never a real requirement, just a convenient side effect
-        // of the old code path: mozjpeg's IDCT/chroma-upsampling rounding
-        // differs from zune-jpeg's by at most 3/255 per channel across that
-        // same 36-photo corpus, DSSIM median 0.0000081 / max 0.0000140 -
-        // imperceptible by the same DSSIM bar this project already accepts
-        // elsewhere (the `fast_image_resize` kernel swap at
-        // 0.0000047-0.0000093 and the alpha-fringe fix at 0.0000035, both
-        // in `.bench-baseline/BASELINE.md`'s "Current baseline" section).
-        // Every JPEG decode now goes through the one decoder instead of two
-        // decoders whose selection depended on whether the request
-        // happened to downscale.
+        // assumed, against mozjpeg - the C-dependency removal swapped the winning decoder for
+        // a pure-Rust one but did not revisit this conclusion): `image`
+        // 0.25.10 pulled in `zune-jpeg` 0.5.x, whose generic
+        // `ZByteReaderTrait` redesign made the per-byte end-of-stream check
+        // in its Huffman bit-refill loop fallible (`reader.eof()?`) where
+        // 0.4.x's was an infallible, immutable `bool` - a real cost paid on
+        // every byte of entropy-coded data, even for zune-jpeg's own
+        // in-memory reader. Measured on 36 real photographs (24-image
+        // Kodak corpus + 3 picsum.photos sources x 4 resolutions, 640x360
+        // through 3840x2160 - not the synthetic gradient-plus-noise fixture
+        // `benches/fixtures.rs` uses elsewhere, per the same reasoning
+        // `adr/0003`/`adr/0004`/`adr/0005` all document - 0004's numbers
+        // are superseded but its method, which is what is cited here, is
+        // not), mozjpeg's full-size (`scale(8)`) decode was consistently
+        // ~1.5x faster than the `image`-crate path across every resolution
+        // bucket - see this change's own report for the full table.
+        // "Byte-for-byte identical" was also never a real requirement, just
+        // a convenient side effect of the old code path: mozjpeg's IDCT/
+        // chroma-upsampling rounding differed from zune-jpeg's by at most
+        // 3/255 per channel across that same 36-photo corpus, DSSIM median
+        // 0.0000081 / max 0.0000140 - imperceptible by the same DSSIM bar
+        // this project already accepts elsewhere (the `fast_image_resize`
+        // kernel swap at 0.0000047-0.0000093 and the alpha-fringe fix at
+        // 0.0000035, both in `.bench-baseline/BASELINE.md`'s "Current
+        // baseline" section). Every JPEG decode goes through the one
+        // decoder instead of two decoders whose selection depended on
+        // whether the request happened to downscale.
+        //
+        // TODO(re-measure): re-measure `jpeg_decoder`'s full-size decode against
+        // `image`/zune-jpeg now that mozjpeg is gone - the numbers above
+        // are mozjpeg's, not `jpeg_decoder`'s, and a pure-Rust decoder is
+        // not guaranteed to keep the same win.
         drop(decoder);
 
-        let img = Self::mozjpeg_decode(image_bytes, scale_num)?;
+        let img = Self::jpeg_scaled_decode(image_bytes, scale_num)?;
 
         Ok((img, orientation, icc_profile, exif_metadata))
     }
@@ -3695,9 +3772,10 @@ impl ImageService {
         }
     }
 
-    /// Picks the most aggressive libjpeg DCT scale (`scale_num/8`, see
-    /// `mozjpeg::Decompress::scale`) whose decoded output is still `>=` the
-    /// requested target in *both* dimensions - i.e. the smallest safe
+    /// Picks the most aggressive libjpeg DCT scale (`scale_num/8`, applied
+    /// via `jpeg_scaled_decode`'s own use of `jpeg_decoder::Decoder::scale`)
+    /// whose decoded output is still `>=` the requested target in *both*
+    /// dimensions - i.e. the smallest safe
     /// decode. Never returns a scale that would decode smaller than
     /// `target_width`/`target_height`: doing so would force
     /// `fast_image_resize` to upscale back up before its final downscale,
@@ -3719,8 +3797,8 @@ impl ImageService {
         target_height: u32,
     ) -> u8 {
         for scale_num in [1u8, 2, 4] {
-            let scaled_width = Self::mozjpeg_scaled_dimension(raw_width, scale_num);
-            let scaled_height = Self::mozjpeg_scaled_dimension(raw_height, scale_num);
+            let scaled_width = Self::jpeg_scaled_dimension(raw_width, scale_num);
+            let scaled_height = Self::jpeg_scaled_dimension(raw_height, scale_num);
             if scaled_width >= target_width && scaled_height >= target_height {
                 return scale_num;
             }
@@ -3732,68 +3810,141 @@ impl ImageService {
     /// `jdiv_round_up(dim * scale_num, 8)` (`jdiv_round_up` in libjpeg-turbo's
     /// `jutils.c`, used by `jdmaster.c`'s `jinit_master_decompress` to set
     /// `output_width`/`output_height`) - exactly, so this prediction matches
-    /// what `Decompress::scale` will actually produce.
-    fn mozjpeg_scaled_dimension(dim: u32, scale_num: u8) -> u32 {
+    /// what a scaled decode will actually produce. `jpeg_decoder`'s own
+    /// internal `idct::choose_idct_size::scaled` helper computes the
+    /// identical value (`((len * scale - 1) / 8 + 1)`, algebraically the
+    /// same ceiling division for `scale >= 1`) - confirmed by reading that
+    /// crate's source, not assumed - so this formula still matches
+    /// `jpeg_scaled_decode` below even though the pixel decode itself
+    /// switched decoders (C-dependency removal).
+    fn jpeg_scaled_dimension(dim: u32, scale_num: u8) -> u32 {
         (u64::from(dim) * u64::from(scale_num)).div_ceil(8) as u32
     }
 
-    /// Runs the actual mozjpeg/libjpeg-turbo pixel decode at `scale_num/8`
-    /// scale, producing an `Rgb8` `DynamicImage`.
+    /// Runs the actual pixel decode at `scale_num/8` scale via
+    /// `jpeg_decoder::Decoder` (the C-dependency removal, replacing mozjpeg/libjpeg-turbo),
+    /// producing an `Rgb8`, `Luma8` or (converted) `Rgb8` `DynamicImage`
+    /// depending on the source's component count.
     ///
-    /// Wrapped in `catch_unwind`: mozjpeg's error manager (see the
-    /// `mozjpeg` crate's `errormgr.rs::unwind_error_exit`, which this crate
-    /// vendors as a dependency but does not modify) deliberately *unwinds*
-    /// on a fatal libjpeg error rather than returning an `Err` - upstream's
-    /// documented behaviour, not a bug. Left uncaught, that panic would
-    /// bypass `decode_jpeg_scaled`'s `Result`-based error handling entirely
-    /// and skip straight past the graceful-fallback path #4 requires.
-    /// `catch_unwind` turns it into a normal `Err` here so a malformed or
-    /// hostile JPEG that trips it falls back to `decode_with_image_crate`
-    /// exactly like any other mozjpeg failure - `Cargo.toml`'s
-    /// `panic = "unwind"` (kept specifically for #29, decoding untrusted
-    /// input) is what makes this catchable at all, rather than aborting the
-    /// process. `AssertUnwindSafe` is sound here: `image_bytes` is a shared
-    /// `&[u8]` with no interior mutability to leave torn, and `scale_num` is
-    /// `Copy`.
+    /// `jpeg_decoder::Decoder::scale(requested_width, requested_height)` is
+    /// the crate's only public lever for DCT-scaled decode, and its own
+    /// scale-picking heuristic (`idct::choose_idct_size`) accepts a scale
+    /// the moment *either* axis of the candidate output meets the
+    /// requested size - an OR, not the AND `select_jpeg_dct_scale` above
+    /// deliberately uses ("never decode smaller than target in *either*
+    /// dimension", see that function's own doc comment). Calling
+    /// `scale(target_width, target_height)` directly would let the crate's
+    /// own looser heuristic pick a more aggressive (smaller) scale than
+    /// `select_jpeg_dct_scale` chose whenever only one axis needed it,
+    /// violating that invariant. Instead, this passes the *scaled*
+    /// dimensions `select_jpeg_dct_scale`'s `scale_num` itself would
+    /// already produce (`jpeg_scaled_dimension(full_dim, scale_num)`) as
+    /// the "requested" size for both axes: at `scale_num` exactly, the
+    /// crate's own `scaled(full_dim, scale_num) >= requested` check is true
+    /// by construction (equality), while every smaller candidate scale
+    /// tried first produces a strictly smaller value in both axes (the
+    /// formula above is strictly increasing in `scale` for any `dim > 0`),
+    /// so the OR-based search still lands on exactly `scale_num` - this was
+    /// checked against the formula, not just asserted; see
+    /// `jpeg_scaled_dimension_matches_libjpeg_ceil_formula` and
+    /// `select_jpeg_dct_scale_never_decodes_below_target` for the pinned
+    /// arithmetic this reasoning depends on.
+    ///
+    /// Wrapped in `catch_unwind`, same defensive spirit as
+    /// `Self::decode_webp` below (not the same as the mozjpeg version this
+    /// replaces, which had a *documented, certain* unwind-on-error design -
+    /// `jpeg_decoder` is a `Result`-based API, so no panic is expected, but
+    /// this decodes attacker-supplied bytes through a crate with a
+    /// non-trivial `unwrap`/`panic!` surface that was not exhaustively
+    /// audited, unlike `encode_jpeg`'s own encode-direction, trusted-input
+    /// removal of this same wrapper above). `Cargo.toml`'s
+    /// `panic = "unwind"` (kept for #29) is what makes any such panic
+    /// catchable at all, letting a malformed or hostile JPEG that trips one
+    /// fall back to `decode_with_image_crate` exactly like any other
+    /// decode failure, rather than taking the whole worker thread down.
     ///
     /// `pub` (like `encode_webp`/`encode_jpeg` above) so `benches/decode.rs`
-    /// can benchmark the exact path production uses for JPEG (#67) instead
-    /// of the raw `image::load_from_memory_with_format` call that used to
-    /// be representative but, after #67, only reflects PNG/WebP.
-    pub fn mozjpeg_decode(image_bytes: &[u8], scale_num: u8) -> Result<DynamicImage> {
+    /// can benchmark the exact path production uses for JPEG.
+    pub fn jpeg_scaled_decode(image_bytes: &[u8], scale_num: u8) -> Result<DynamicImage> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Self::mozjpeg_decode_inner(image_bytes, scale_num)
+            Self::jpeg_scaled_decode_inner(image_bytes, scale_num)
         }))
         .unwrap_or_else(|payload| {
             let msg = payload
                 .downcast_ref::<String>()
                 .cloned()
                 .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
-                .unwrap_or_else(|| "mozjpeg panicked with a non-string payload".to_string());
-            Err(anyhow::anyhow!("mozjpeg decode panicked: {msg}"))
+                .unwrap_or_else(|| "jpeg-decoder panicked with a non-string payload".to_string());
+            Err(anyhow::anyhow!("jpeg-decoder decode panicked: {msg}"))
         })
     }
 
-    fn mozjpeg_decode_inner(image_bytes: &[u8], scale_num: u8) -> Result<DynamicImage> {
-        let mut decompress = mozjpeg::Decompress::new_mem(image_bytes)
-            .context("mozjpeg: failed to read JPEG header")?;
-        decompress.scale(scale_num);
+    fn jpeg_scaled_decode_inner(image_bytes: &[u8], scale_num: u8) -> Result<DynamicImage> {
+        let mut decoder = jpeg_decoder::Decoder::new(image_bytes);
+        decoder
+            .read_info()
+            .context("jpeg-decoder: failed to read JPEG header")?;
+        let header_info = decoder
+            .info()
+            .context("jpeg-decoder: missing image info after header read")?;
 
-        let mut started = decompress
-            .rgb()
-            .context("mozjpeg: failed to start decompression")?;
-        let width = started.width() as u32;
-        let height = started.height() as u32;
-        let pixels: Vec<u8> = started
-            .read_scanlines()
-            .context("mozjpeg: failed to read scanlines")?;
-        started
-            .finish()
-            .context("mozjpeg: failed to finish decompression")?;
+        // See `jpeg_scaled_decode`'s own doc comment for why the
+        // "requested size" passed here is the scale-selection input, not
+        // the real resize target.
+        let requested_width = Self::jpeg_scaled_dimension(u32::from(header_info.width), scale_num)
+            .min(u32::from(u16::MAX)) as u16;
+        let requested_height = Self::jpeg_scaled_dimension(u32::from(header_info.height), scale_num)
+            .min(u32::from(u16::MAX)) as u16;
+        decoder
+            .scale(requested_width.max(1), requested_height.max(1))
+            .context("jpeg-decoder: failed to configure DCT-scaled decode")?;
 
-        image::RgbImage::from_raw(width, height, pixels)
-            .map(DynamicImage::ImageRgb8)
-            .context("mozjpeg: decoded pixel buffer size did not match reported dimensions")
+        let pixels = decoder
+            .decode()
+            .context("jpeg-decoder: failed to decode JPEG")?;
+        let info = decoder
+            .info()
+            .context("jpeg-decoder: missing image info after decode")?;
+        let (width, height) = (u32::from(info.width), u32::from(info.height));
+
+        match info.pixel_format {
+            jpeg_decoder::PixelFormat::L8 => image::GrayImage::from_raw(width, height, pixels)
+                .map(DynamicImage::ImageLuma8)
+                .context("jpeg-decoder: decoded L8 buffer size did not match reported dimensions"),
+            jpeg_decoder::PixelFormat::RGB24 => image::RgbImage::from_raw(width, height, pixels)
+                .map(DynamicImage::ImageRgb8)
+                .context(
+                    "jpeg-decoder: decoded RGB24 buffer size did not match reported dimensions",
+                ),
+            jpeg_decoder::PixelFormat::CMYK32 => {
+                // `jpeg_decoder` has no `image`-crate buffer type of its
+                // own for CMYK, and unlike mozjpeg (which converted every
+                // source colour space, CMYK/YCCK included, to `JCS_RGB`
+                // internally via `Decompress::rgb()`) this crate returns
+                // raw CMYK bytes and leaves the conversion to the caller.
+                // Bytes are already in the standard (non-inverted) 0=no-ink
+                // convention - confirmed by reading `color_convert_line_cmyk`
+                // in `jpeg-decoder`'s source, which stores `255 - raw`
+                // component-wise - so no Adobe-inversion correction is
+                // needed here, just the textbook CMYK -> RGB formula.
+                let mut rgb = Vec::with_capacity(pixels.len() / 4 * 3);
+                let (cmyk, _rest) = pixels.as_chunks::<4>();
+                for &[c, m, y, k] in cmyk {
+                    let r = u32::from(255 - c) * u32::from(255 - k) / 255;
+                    let g = u32::from(255 - m) * u32::from(255 - k) / 255;
+                    let b = u32::from(255 - y) * u32::from(255 - k) / 255;
+                    rgb.extend_from_slice(&[r as u8, g as u8, b as u8]);
+                }
+                image::RgbImage::from_raw(width, height, rgb)
+                    .map(DynamicImage::ImageRgb8)
+                    .context(
+                        "jpeg-decoder: decoded CMYK32 buffer size did not match reported dimensions",
+                    )
+            }
+            jpeg_decoder::PixelFormat::L16 => {
+                anyhow::bail!("jpeg-decoder: 16-bit grayscale JPEG is not supported")
+            }
+        }
     }
 
     /// Explicit decode limits derived from the configured max source
@@ -4032,27 +4183,28 @@ mod tests {
         assert_eq!(size, 4);
     }
 
-    // ---- #63 stage 2: mozjpeg DCT-scaled decode ----
+    // ---- #63 stage 2: JPEG DCT-scaled decode (the C-dependency removal: jpeg_decoder) ----
 
-    /// `mozjpeg_scaled_dimension` must reproduce libjpeg's own
+    /// `jpeg_scaled_dimension` must reproduce libjpeg's own
     /// `jdiv_round_up(dim * scale_num, 8)` ceiling formula exactly, or the
     /// scale planner in `select_jpeg_dct_scale` could mispredict what
-    /// `Decompress::scale` actually produces.
+    /// `jpeg_scaled_decode`'s underlying `jpeg_decoder::Decoder::scale`
+    /// call actually produces.
     #[test]
-    fn mozjpeg_scaled_dimension_matches_libjpeg_ceil_formula() {
+    fn jpeg_scaled_dimension_matches_libjpeg_ceil_formula() {
         // 1/8 scale of 3840 is an exact 480, no rounding involved.
-        assert_eq!(ImageService::mozjpeg_scaled_dimension(3840, 1), 480);
+        assert_eq!(ImageService::jpeg_scaled_dimension(3840, 1), 480);
         // 1/4 and 1/2 of the same source.
-        assert_eq!(ImageService::mozjpeg_scaled_dimension(3840, 2), 960);
-        assert_eq!(ImageService::mozjpeg_scaled_dimension(3840, 4), 1920);
+        assert_eq!(ImageService::jpeg_scaled_dimension(3840, 2), 960);
+        assert_eq!(ImageService::jpeg_scaled_dimension(3840, 4), 1920);
         // Full resolution (8/8) is a no-op.
-        assert_eq!(ImageService::mozjpeg_scaled_dimension(3840, 8), 3840);
+        assert_eq!(ImageService::jpeg_scaled_dimension(3840, 8), 3840);
         // A dimension libjpeg's ceiling rounds up rather than truncates:
         // 1000 * 1 / 8 = 125.0 exactly, but 1001 * 1 / 8 = 125.125, which
         // must round *up* to 126, not truncate to 125.
-        assert_eq!(ImageService::mozjpeg_scaled_dimension(1001, 1), 126);
+        assert_eq!(ImageService::jpeg_scaled_dimension(1001, 1), 126);
         // Degenerate 1px source must never round down to 0.
-        assert_eq!(ImageService::mozjpeg_scaled_dimension(1, 1), 1);
+        assert_eq!(ImageService::jpeg_scaled_dimension(1, 1), 1);
     }
 
     /// For a large source and a small target, `select_jpeg_dct_scale` must
@@ -4106,8 +4258,8 @@ mod tests {
                 let target_h = raw_h * num / 8;
                 let scale = ImageService::select_jpeg_dct_scale(raw_w, raw_h, target_w, target_h);
 
-                let scaled_w = ImageService::mozjpeg_scaled_dimension(raw_w, scale);
-                let scaled_h = ImageService::mozjpeg_scaled_dimension(raw_h, scale);
+                let scaled_w = ImageService::jpeg_scaled_dimension(raw_w, scale);
+                let scaled_h = ImageService::jpeg_scaled_dimension(raw_h, scale);
 
                 assert!(
                     scaled_w >= target_w && scaled_h >= target_h,
@@ -4170,21 +4322,19 @@ mod tests {
         );
     }
 
-    /// `mozjpeg_decode` wraps the actual libjpeg-turbo call in
-    /// `catch_unwind` because mozjpeg's error manager unwinds (panics) on a
-    /// fatal libjpeg error rather than returning `Err` (see that function's
-    /// doc comment) - bytes with no valid JPEG SOI marker at all trip
-    /// exactly this path (libjpeg's `read_markers` calls `ERREXIT` for "Not
-    /// a JPEG file" unconditionally, not gated behind the `require_image`
-    /// flag `Decompress::read_header` otherwise relies on). This must come
-    /// back as a normal `Err`, not tear down the test process - proving the
-    /// safety net #4 depends on (graceful fallback rather than a panic
+    /// `jpeg_scaled_decode` wraps the actual `jpeg_decoder` call in
+    /// `catch_unwind` defensively (see that function's own doc comment for
+    /// why - decode-direction, attacker-controlled bytes, unlike
+    /// `encode_jpeg`'s verified-safe removal of the equivalent wrapper).
+    /// Bytes with no valid JPEG SOI marker at all must come back as a
+    /// normal `Err` regardless, not tear down the test process - proving
+    /// the safety net #4 depends on (graceful fallback rather than a panic
     /// escaping past `decode_jpeg_scaled`) actually works, not just that it
     /// compiles.
     #[test]
-    fn mozjpeg_decode_returns_err_instead_of_panicking_on_non_jpeg_bytes() {
+    fn jpeg_scaled_decode_returns_err_instead_of_panicking_on_non_jpeg_bytes() {
         let garbage = vec![0u8; 256];
-        let result = ImageService::mozjpeg_decode(&garbage, 8);
+        let result = ImageService::jpeg_scaled_decode(&garbage, 8);
         assert!(
             result.is_err(),
             "expected a graceful Err for non-JPEG bytes, not a panic or success"
@@ -4217,13 +4367,14 @@ mod tests {
     /// to a small thumbnail. This is exactly the shape of request that
     /// should select an aggressive DCT scale (see
     /// `select_jpeg_dct_scale_picks_most_aggressive_safe_reduction`) and
-    /// decode through mozjpeg rather than the full-resolution fallback -
-    /// asserted here indirectly, through the one thing that must never be
-    /// wrong regardless of which decoder produced the pixels: the final
-    /// output dimensions, which must match what `resize_dimensions` (the
-    /// same aspect-ratio math the non-scaled path already uses) predicts.
+    /// decode through `jpeg_scaled_decode` rather than the full-resolution
+    /// fallback - asserted here indirectly, through the one thing that must
+    /// never be wrong regardless of which decoder produced the pixels: the
+    /// final output dimensions, which must match what `resize_dimensions`
+    /// (the same aspect-ratio math the non-scaled path already uses)
+    /// predicts.
     #[test]
-    fn large_downscale_through_mozjpeg_produces_correct_output_dimensions() {
+    fn large_downscale_through_jpeg_scaled_decode_produces_correct_output_dimensions() {
         let bytes = fixtures::photo_like_sized(3840, 2160, ImageFormat::Jpeg);
         let config = PerformanceConfig::default();
         let params = query_with_type(Some(200), Some(113), ResizeType::Fit);
@@ -4658,6 +4809,10 @@ mod tests {
     /// bound to return.
     #[tokio::test]
     async fn streaming_cap_aborts_on_chunked_oversized_body_without_content_length() {
+        // Builds a real reqwest Client through production code, which panics
+        // unless a rustls crypto provider is installed. `main()` does that at
+        // startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -4745,6 +4900,10 @@ mod tests {
     /// address on every hop, including this one.
     #[tokio::test]
     async fn redirect_to_metadata_endpoint_is_rejected_even_when_origin_is_allowed() {
+        // Builds a real reqwest Client through production code, which panics
+        // unless a rustls crypto provider is installed. `main()` does that at
+        // startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -4868,6 +5027,10 @@ mod tests {
     /// failure, not a guard rejection.
     #[tokio::test]
     async fn allowlisted_private_origin_passes_the_guard_instead_of_being_blocked() {
+        // Builds a real reqwest Client through production code, which panics
+        // unless a rustls crypto provider is installed. `main()` does that at
+        // startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         let config = PerformanceConfig {
             allowed_sources: Some(vec!["http://10.255.255.1/".to_string()]),
             http_timeout: std::time::Duration::from_millis(500),
@@ -4899,6 +5062,10 @@ mod tests {
     /// iteration) - it does not "stick" once granted for the first hop.
     #[tokio::test]
     async fn allowlisted_origin_redirecting_to_non_allowlisted_private_ip_is_refused() {
+        // Builds a real reqwest Client through production code, which panics
+        // unless a rustls crypto provider is installed. `main()` does that at
+        // startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -4969,6 +5136,10 @@ mod tests {
     /// #57's allowlist change must not reopen it.
     #[tokio::test]
     async fn redirect_to_metadata_endpoint_is_rejected_even_when_it_matches_the_allowlist() {
+        // Builds a real reqwest Client through production code, which panics
+        // unless a rustls crypto provider is installed. `main()` does that at
+        // startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -5035,6 +5206,10 @@ mod tests {
     /// rather than following forever.
     #[tokio::test]
     async fn redirect_loop_is_cut_off_at_max_redirects() {
+        // Builds a real reqwest Client through production code, which panics
+        // unless a rustls crypto provider is installed. `main()` does that at
+        // startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -5672,7 +5847,7 @@ mod tests {
     /// The reference decode must go through the same decoder the pipeline
     /// uses for this request (#67): `query(None, None)` requests no
     /// resize, so `decode_jpeg_scaled` picks `scale_num == 8` and decodes
-    /// through `mozjpeg_decode`, not `image::load_from_memory`'s
+    /// through `jpeg_scaled_decode`, not `image::load_from_memory`'s
     /// zune-jpeg path (that stopped being true once #67 retired the old
     /// scale_num == 8 special case - see `decode_jpeg_scaled`'s
     /// retired-rationale comment). The two decoders differ by up to 3/255
@@ -5681,6 +5856,12 @@ mod tests {
     /// decoder than the one the pipeline actually ran. This test cares
     /// about the WebP encoder's losslessness, not about which JPEG decoder
     /// is faster, so `original` is decoded the same way the pipeline does.
+    ///
+    /// The WebP *output* is decoded via `Self::decode_webp_pixels` (C-dependency removal)
+    /// rather than `image::load_from_memory`: `image`'s own "webp" feature
+    /// is gone from `Cargo.toml` (every WebP direction now goes through
+    /// `image_webp` directly), so `load_from_memory` can no longer decode
+    /// WebP bytes at all.
     #[test]
     fn webp_lossless_round_trips_byte_identical_pixels() {
         let bytes = fixtures::photo_like(); // 1920x1080, no alpha channel
@@ -5695,10 +5876,10 @@ mod tests {
             ImageService::process_image_blocking_with_limits(&bytes, &params, &config)
                 .expect("processing should succeed");
 
-        let original = ImageService::mozjpeg_decode(&bytes, 8)
+        let original = ImageService::jpeg_scaled_decode(&bytes, 8)
             .expect("source should decode")
             .to_rgba8();
-        let decoded = image::load_from_memory(&output)
+        let decoded = ImageService::decode_webp_pixels(&output)
             .expect("lossless webp output should decode")
             .to_rgba8();
 
@@ -5748,22 +5929,17 @@ mod tests {
         );
     }
 
-    /// #66: a WebP *source* now decodes via `libwebp`
-    /// (`decode_webp_libwebp`/`libwebp_decode`) instead of `image-webp`.
-    /// Encodes a real photographic source to *lossless* WebP first (so the
-    /// reference pixels are known exactly, no lossy re-encode noise to
-    /// account for), feeds that WebP back in as a source, and asserts the
-    /// pipeline's decode-then-re-encode-lossless round trip is
-    /// byte-identical to the original pixels - proving the new libwebp
-    /// decode path decodes real photographic content correctly, not just
-    /// that it doesn't crash. `dssim`-based equivalence against the *old*
-    /// `image-webp` decoder on the real Kodak corpus was measured
-    /// separately (not an in-repo test: `dssim` is AGPL-3.0, kept out of
-    /// this crate's own dependency tree for the same reason ADR 0003/0004
-    /// did) - see this change's own report for that measurement (max
-    /// DSSIM delta 0.00000000 across all 24 images, i.e. pixel-identical).
+    /// the C-dependency removal: a WebP *source* now decodes via `image_webp::WebPDecoder`
+    /// (`Self::decode_webp`/`decode_webp_pixels`) instead of real libwebp
+    /// (the `webp` crate this replaced, #66's own change). Encodes a real
+    /// photographic source to *lossless* WebP first (so the reference
+    /// pixels are known exactly, no lossy re-encode noise to account for),
+    /// feeds that WebP back in as a source, and asserts the pipeline's
+    /// decode-then-re-encode-lossless round trip is byte-identical to the
+    /// original pixels - proving the `image_webp` decode path decodes real
+    /// photographic content correctly, not just that it doesn't crash.
     #[test]
-    fn webp_source_decodes_via_libwebp_correctly() {
+    fn webp_source_decodes_correctly() {
         let photo = fixtures::photo_like(); // 1920x1080 JPEG
         let config = PerformanceConfig::default();
 
@@ -5784,16 +5960,16 @@ mod tests {
         );
 
         // Second pass: that WebP source -> lossless WebP again. If
-        // `libwebp_decode` decodes it correctly, this must be an exact
+        // `Self::decode_webp` decodes it correctly, this must be an exact
         // byte-for-byte pixel round trip (both hops lossless).
         let (webp_again, _) =
             ImageService::process_image_blocking_with_limits(&webp_source, &to_webp, &config)
                 .expect("WebP -> lossless WebP should succeed");
 
-        let original = image::load_from_memory(&webp_source)
+        let original = ImageService::decode_webp_pixels(&webp_source)
             .expect("first-pass webp should decode")
             .to_rgba8();
-        let round_tripped = image::load_from_memory(&webp_again)
+        let round_tripped = ImageService::decode_webp_pixels(&webp_again)
             .expect("second-pass webp should decode")
             .to_rgba8();
 
@@ -5801,7 +5977,7 @@ mod tests {
         assert_eq!(
             original.as_raw(),
             round_tripped.as_raw(),
-            "libwebp-decoded WebP source, re-encoded lossless, must round-trip exactly"
+            "image-webp-decoded WebP source, re-encoded lossless, must round-trip exactly"
         );
     }
 
@@ -5993,28 +6169,29 @@ mod tests {
     }
 
     /// Builds a tiny (4x4) `frame_count`-frame animated WebP the same way,
-    /// via the `webp` crate's `AnimEncoder` - the exact same encoder
-    /// `ImageService::encode_animated_webp` uses in production.
+    /// via `ImageService::encode_animated_webp` directly (C-dependency removal) - the exact
+    /// same hand-rolled `VP8X`/`ANIM`/`ANMF` encoder production uses,
+    /// rather than a second, parallel fixture-only implementation of the
+    /// same container format that could silently drift from it.
     fn tiny_animated_webp(frame_count: u32) -> Vec<u8> {
-        let webp_config = webp::WebPConfig::new().expect("init webp config");
-        let mut encoder = webp::AnimEncoder::new(4, 4, &webp_config);
-        let mut buffers: Vec<Vec<u8>> = Vec::new();
+        let mut frames = Vec::with_capacity(frame_count as usize);
         for i in 0..frame_count {
-            let colour: [u8; 4] = if i % 2 == 0 {
-                [255, 0, 0, 255]
+            let colour = if i % 2 == 0 {
+                image::Rgba([255, 0, 0, 255])
             } else {
-                [0, 0, 255, 255]
+                image::Rgba([0, 0, 255, 255])
             };
-            let mut buf = Vec::with_capacity(4 * 4 * 4);
-            for _ in 0..16 {
-                buf.extend_from_slice(&colour);
-            }
-            buffers.push(buf);
+            let img = image::RgbaImage::from_pixel(4, 4, colour);
+            frames.push(image::Frame::from_parts(
+                img,
+                0,
+                0,
+                image::Delay::from_numer_denom_ms(100, 1),
+            ));
         }
-        for (i, buf) in buffers.iter().enumerate() {
-            encoder.add_frame(webp::AnimFrame::from_rgba(buf, 4, 4, (i as i32) * 100));
-        }
-        encoder.encode().to_vec()
+        ImageService::encode_animated_webp(frames, &query(None, None))
+            .expect("encode animated webp fixture")
+            .0
     }
 
     /// #49: an animated GIF source requested as `.gif` must stay animated -
@@ -6067,18 +6244,22 @@ mod tests {
 
         assert_eq!(content_type, "image/webp");
 
-        let decoder = image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(&output))
+        let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(&output))
             .expect("output should be a valid WebP");
-        assert!(decoder.has_animation(), "output should still be animated");
-        let frames = decoder
-            .into_frames()
-            .collect_frames()
-            .expect("decode frames");
+        assert!(decoder.is_animated(), "output should still be animated");
+        let output_buffer_size = decoder
+            .output_buffer_size()
+            .expect("output buffer size should be computable");
+        let mut frame_count = 0u32;
+        for _ in 0..decoder.num_frames() {
+            let mut buf = vec![0u8; output_buffer_size];
+            decoder.read_frame(&mut buf).expect("decode frame");
+            frame_count += 1;
+        }
         assert!(
-            frames.len() > 1,
+            frame_count > 1,
             "expected the animated source's multiple frames to survive round-tripping \
-             through .webp output, got {}",
-            frames.len()
+             through .webp output, got {frame_count}"
         );
     }
 
@@ -6205,27 +6386,94 @@ mod tests {
         assert_eq!(decoded.dimensions(), (100, 100));
     }
 
-    /// #67: an AVIF source whose header declares a resolution over the
-    /// configured cap must be rejected *before* `avifDecoderNextImage`
-    /// (the actual AV1 payload decode) runs - the same "tiny on disk,
-    /// declares a huge resolution" decompression-bomb shape
+    /// #67: an AVIF source declaring a resolution over the configured cap
+    /// must be rejected *before* the AV1 payload is decoded - the same
+    /// "tiny on disk, declares a huge resolution" decompression-bomb shape
     /// `decompression_bomb_fixture_is_rejected_before_full_decode` proves
-    /// for the PNG `bomb()` fixture, reproduced here for AVIF by patching
-    /// a real, cheaply-encoded AVIF's `ispe` (Image Spatial Extents) box -
-    /// the field `avifDecoderParse`'s header-only read trusts - to declare
-    /// 10000x10000 without actually re-encoding that many pixels.
+    /// for the PNG `bomb()` fixture.
+    ///
+    /// **This test was rewritten when libavif was replaced.** It used to
+    /// build its bomb by patching the container's `ispe` (Image Spatial
+    /// Extents) box to claim 10000x10000, because `avifDecoderParse` - what
+    /// `peek_dimensions` called then - populated `image->width/height` from
+    /// exactly that field. `peek_dimensions` now reads
+    /// `avif_parse::..::primary_item_metadata()`, i.e. the AV1 **sequence
+    /// header** inside the coded stream, so patching `ispe` changes nothing
+    /// it looks at and the old fixture stopped being a bomb at all. It did
+    /// not start failing because the guard broke - it failed because the
+    /// fixture no longer lied about anything the guard reads.
+    ///
+    /// Reading the sequence header is the stronger of the two: `ispe` is
+    /// container metadata that can disagree with the stream it describes,
+    /// while the sequence header is what the decoder actually allocates
+    /// from. `peek_dimensions_reads_the_coded_stream_not_the_ispe_box`
+    /// below pins that difference directly.
+    ///
+    /// The bomb here is therefore built the way it now has to be: a real
+    /// 1000x1000 source (1 MP) that encodes to very few bytes because it is
+    /// flat colour, against a 0 MP cap. Small file, large declared
+    /// resolution, no fabricated metadata.
     #[test]
     fn avif_decompression_bomb_is_rejected_before_full_decode() {
-        let small = image::DynamicImage::ImageRgb8(fixtures::gradient_noise_rgb(8, 8));
-        let mut avif_bytes = crate::services::image::avif_codec::encode(&small, 50, 8, None)
+        let flat = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            1000,
+            1000,
+            image::Rgb([7u8, 90, 200]),
+        ));
+        let avif_bytes = crate::services::image::avif_codec::encode(&flat, 50, 10, None)
             .expect("AVIF encode should succeed");
 
-        // Locate the `ispe` box (ISO/IEC 23008-12 6.5.3): FullBox header
-        // (4-byte size, 4-byte type "ispe", 1-byte version, 3-byte flags)
-        // followed by big-endian `image_width`/`image_height` u32s -
-        // exactly the two fields `avifDecoderParse` populates
-        // `decoder->image->width/height` from without ever touching the
-        // AV1-coded payload.
+        // The bomb property: a 1 MP source in a tiny file.
+        assert!(
+            avif_bytes.len() < 100_000,
+            "fixture should be small relative to its declared resolution, was {} bytes",
+            avif_bytes.len()
+        );
+
+        let config = PerformanceConfig {
+            // `check_source_resolution` compares `pixels / 1_000_000 > cap`,
+            // so a 0 MP cap rejects anything at or above 1 MP while leaving
+            // the sub-megapixel fixtures other tests use unaffected.
+            max_src_resolution_mp: 0,
+            ..PerformanceConfig::default()
+        };
+        let params = ResizeQuery {
+            format: ApiImageFormat::Jpg,
+            ..query_with_type(Some(100), Some(100), ResizeType::Fill)
+        };
+
+        let err = ImageService::process_image_blocking_with_limits(&avif_bytes, &params, &config)
+            .expect_err("1000x1000 AVIF source should be rejected against a 0 MP cap");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("too large"),
+            "expected a resolution-cap rejection, got: {msg}"
+        );
+    }
+
+    /// Pins the behaviour change described in
+    /// `avif_decompression_bomb_is_rejected_before_full_decode`: dimensions
+    /// come from the AV1 sequence header, not the container's `ispe` box, so
+    /// a source whose `ispe` disagrees with its coded stream cannot talk the
+    /// resolution guard into seeing the wrong number.
+    ///
+    /// Written as a test rather than a comment because it is the sort of
+    /// thing that would otherwise be silently undone by a future change back
+    /// to a container-level dimension read.
+    #[test]
+    fn peek_dimensions_reads_the_coded_stream_not_the_ispe_box() {
+        let small = image::DynamicImage::ImageRgb8(fixtures::gradient_noise_rgb(8, 8));
+        let mut avif_bytes = crate::services::image::avif_codec::encode(&small, 50, 10, None)
+            .expect("AVIF encode should succeed");
+
+        assert_eq!(
+            ImageService::peek_dimensions(&avif_bytes, Some(ImageFormat::Avif)).unwrap(),
+            (8, 8)
+        );
+
+        // ISO/IEC 23008-12 6.5.3: FullBox header (4-byte size, 4-byte type
+        // "ispe", 1-byte version, 3-byte flags) then big-endian
+        // `image_width`/`image_height`.
         let ispe_offset = avif_bytes
             .windows(4)
             .position(|w| w == b"ispe")
@@ -6234,19 +6482,10 @@ mod tests {
         avif_bytes[width_offset..width_offset + 4].copy_from_slice(&10_000u32.to_be_bytes());
         avif_bytes[width_offset + 4..width_offset + 8].copy_from_slice(&10_000u32.to_be_bytes());
 
-        let config = PerformanceConfig::default(); // 50 MP cap
-        let params = ResizeQuery {
-            format: ApiImageFormat::Jpg,
-            ..query_with_type(Some(100), Some(100), ResizeType::Fill)
-        };
-
-        let err =
-            ImageService::process_image_blocking_with_limits(&avif_bytes, &params, &config)
-                .expect_err("10000x10000-declared AVIF source should be rejected");
-        let msg = err.to_string().to_lowercase();
-        assert!(
-            msg.contains("too large"),
-            "expected a resolution-too-large error, got: {msg}"
+        assert_eq!(
+            ImageService::peek_dimensions(&avif_bytes, Some(ImageFormat::Avif)).unwrap(),
+            (8, 8),
+            "a lying ispe box must not change the dimensions the guard sees"
         );
     }
 
@@ -7601,6 +7840,10 @@ mod tests {
     /// the request's own `wmu:` is absent.
     #[tokio::test]
     async fn configured_default_watermark_url_is_used_when_request_supplies_none() {
+        // Builds a real reqwest Client through production code, which panics
+        // unless a rustls crypto provider is installed. `main()` does that at
+        // startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
         let watermark_bytes = {
             let img = DynamicImage::ImageRgba8(solid_rgba(4, 4, [0, 255, 0, 255]));
             let mut buf = Cursor::new(Vec::new());
@@ -7663,9 +7906,21 @@ mod tests {
     // ---- #5: strip_metadata ----
 
     /// Decodes `bytes` as `format` and returns whatever raw Exif blob (if
-    /// any) `image`'s own decoder finds - used below to check the *actual*
-    /// encoded output, not just that `strip_metadata` parsed.
+    /// any) is found - used below to check the *actual* encoded output, not
+    /// just that `strip_metadata` parsed.
+    ///
+    /// `WebP` is special-cased through `image_webp::WebPDecoder` directly
+    /// (C-dependency removal): `image`'s own "webp" feature is gone from `Cargo.toml`, so
+    /// `ImageReader::into_decoder()` can no longer construct a WebP decoder
+    /// at all for every other format this helper is called with.
     fn decoded_exif(bytes: &[u8], format: ImageFormat) -> Option<Vec<u8>> {
+        if format == ImageFormat::WebP {
+            return image_webp::WebPDecoder::new(Cursor::new(bytes))
+                .expect("test fixture/output should have a valid header")
+                .exif_metadata()
+                .expect("exif_metadata() read should not itself fail");
+        }
+
         image::ImageReader::with_format(Cursor::new(bytes), format)
             .into_decoder()
             .expect("test fixture/output should have a valid header")
@@ -7716,9 +7971,8 @@ mod tests {
     }
 
     /// #5: `sm:0`/`strip_metadata: false` must forward the source's Exif -
-    /// GPS included - to JPEG output via the raw `APP1` marker
-    /// `encode_jpeg_inner` writes by hand (mozjpeg has no higher-level Exif
-    /// API, unlike PNG/AVIF's `set_exif_metadata`).
+    /// GPS included - to JPEG output via `Self::encode_jpeg`'s call to
+    /// `jpeg_encoder::Encoder::add_exif_metadata` (C-dependency removal).
     #[test]
     fn strip_metadata_false_keeps_gps_in_jpeg_output() {
         let bytes = fixtures::jpeg_with_gps_exif(1);
@@ -7894,13 +8148,20 @@ mod tests {
         assert_eq!(decoded_exif(&output, ImageFormat::Png), None);
     }
 
-    /// #5's per-format matrix: this crate's lossy WebP output goes through
-    /// the standalone `webp` crate (`Self::encode_webp`), whose `Encoder`
-    /// has no Exif/ICC API at all - `sm:0` against a `.webp` output is a
-    /// real, documented no-op, not a bug. Proven directly against the
-    /// output bytes rather than just asserting `encode_single_image` didn't
-    /// panic, so a future encoder swap that silently starts (or stops)
-    /// carrying metadata would be caught here.
+    /// #5's per-format matrix: `sm:0` against a `.webp` output is currently
+    /// a no-op - not because `image_webp::WebPEncoder` lacks the API (the C-dependency removal:
+    /// unlike the `webp` crate this replaced, it has real
+    /// `set_exif_metadata`/`set_icc_profile` methods), but because
+    /// `Self::encode_webp`'s public signature was deliberately kept
+    /// unchanged during the codec swap (see that function's own doc
+    /// comment) and nothing calls them yet. Wiring `icc_profile`/
+    /// `exif_metadata` through `encode_webp` is a real, available
+    /// improvement - TODO(re-measure): thread them through the same way
+    /// `encode_jpeg`/`encode_png` already do, once a signature change for
+    /// `encode_webp` is in scope. Proven directly against the output bytes
+    /// rather than just asserting `encode_single_image` didn't panic, so
+    /// that improvement landing would be caught by this test needing to
+    /// change, not silently.
     #[test]
     fn strip_metadata_false_has_no_effect_on_webp_output() {
         let bytes = fixtures::jpeg_with_gps_exif(1);
@@ -7917,7 +8178,8 @@ mod tests {
         assert_eq!(
             decoded_exif(&output, ImageFormat::WebP),
             None,
-            "the webp crate's Encoder has no Exif API - sm:0 cannot be honoured for WebP output"
+            "encode_webp doesn't wire EXIF through yet (the C-dependency removal TODO) - sm:0 is currently a no-op \
+             for WebP output"
         );
     }
 
