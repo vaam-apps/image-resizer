@@ -165,18 +165,23 @@ Micro-benchmarks (single-operation, criterion, darwin/arm64, synthetic fixture �
 
 | Operation | Time |
 |---|---:|
-| JPEG decode, 1920x1080 | **TODO(re-measure)** (was: 7.32 ms, via `mozjpeg`/libjpeg-turbo) |
-| JPEG encode (baseline) | **TODO(re-measure)** (was: 930 µs, via `mozjpeg`'s `JCP_FASTEST` profile) |
-| JPEG encode (progressive) | **TODO(re-measure)** (was: 17.58 ms, via `mozjpeg`'s `JCP_MAX_COMPRESSION` profile) |
+| JPEG decode, 1920x1080 | 15.28 ms (`jpeg-decoder`; was 7.23 ms via `mozjpeg` — **2.11x slower**) |
+| JPEG encode (baseline) | 2.75 ms (`jpeg-encoder`; was 0.93 ms via `mozjpeg` — **2.97x slower**) |
+| JPEG encode (progressive) | 2.79 ms (`jpeg-encoder`; was 17.49 ms via `mozjpeg`'s `JCP_MAX_COMPRESSION` — **6.3x faster, but doing less work**, see ADR 0006) |
 | PNG encode (production path: `CompressionType::Best`) | 98.93 ms |
-| WebP encode | **TODO(re-measure)** (was: 23.66 ms, via the `webp` crate / real libwebp) |
-| WebP decode, 1920x1080 | **TODO(re-measure)** (was: 32.27 ms, via real libwebp through FFI) |
-| AVIF encode (`DEFAULT_AVIF_SPEED = 6`) | **TODO(re-measure)** (was: 65.89 ms, via `libavif`/AOM) |
-| AVIF decode, 1920x1080 | **TODO(re-measure)** (was: 55.13 ms, via `libavif`/dav1d) |
+| WebP encode | 25.19 ms (`vaam-image-webp`; was 23.66 ms via libwebp — 1.06x slower here, 1.43x on the photo fixture) |
+| WebP decode, 1920x1080 | 45.51 ms — **not comparable to the old 32.82 ms**: this bench decodes fixtures made by the encoder under test, and that encoder changed. See ADR 0006. |
+| AVIF encode (`DEFAULT_AVIF_SPEED = 6`) | 92.87 ms (`ravif`/`rav1e`, no assembly; was 65.18 ms via `libavif`/AOM — **1.42x slower**) |
+| AVIF decode, 1920x1080 | 17.81 ms — **not comparable to the old 54.35 ms**: fixtures moved from AOM 4:2:0 to ravif 4:4:4, so the two runs decode different bitstreams. See ADR 0006. |
 | Resize, downscale, Lanczos3 (`fast_image_resize`) | 3.43 ms |
 | Resize, downscale, Triangle→Bilinear (`fast_image_resize`) | 1.15 ms |
-| Full pipeline, photo → thumbnail JPEG | **TODO(re-measure)** (was: 6.15 ms; pipeline includes JPEG decode+encode, now on pure-Rust codecs) |
-| Full pipeline, 4K photo → large downscale | **TODO(re-measure)** (was: 19.59 ms; pipeline includes JPEG decode+encode, now on pure-Rust codecs) |
+| Full pipeline, photo → thumbnail JPEG | 9.65 ms (was 6.04 ms — **1.60x slower**) |
+| Full pipeline, 4K photo → large downscale | 33.87 ms (was 19.19 ms — **1.76x slower**) |
+
+**Speed is only half of it.** At DSSIM-matched quality on the Kodak corpus, the pure-Rust
+encoders also produce **larger files**: JPEG is 1.16x–1.41x bigger than mozjpeg (no trellis
+quantisation), and WebP is 1.89x–2.19x bigger than libwebp. Full method, per-image numbers
+and the accepted regressions are in [ADR 0006](adr/0006-pure-rust-codecs.md).
 
 PNG's number above is the one that used to read as 1.71 ms in this table — that measured the `image` crate's default `CompressionType::Fast`, which production never uses; `encode_single_image` builds an explicit `CompressionType::Best` encoder, ~56x more expensive on this fixture. See `.bench-baseline/BASELINE.md`'s "PNG encode correction" section for the full story.
 

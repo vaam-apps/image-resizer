@@ -104,6 +104,43 @@ fn cached(name: &str, generate: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
 }
 
 fn encode(img: &DynamicImage, format: ImageFormat) -> Vec<u8> {
+    // WebP is routed through the production encoder rather than
+    // `DynamicImage::write_to`. `Cargo.toml` drops `image`'s own "webp"
+    // feature so that exactly one WebP implementation is linked in, which
+    // makes `write_to(.., ImageFormat::WebP)` fail at runtime with
+    // `Unsupported(Format(Name("WebP")))` - not at compile time, so a bench
+    // that asks for a WebP fixture only discovers it mid-run.
+    //
+    // Using `ImageService::encode_webp` also keeps the fixture honest: the
+    // WebP bytes the decode benches measure against are produced by the same
+    // encoder production uses, rather than by a second implementation that
+    // happens to be linked in for tests.
+    if format == ImageFormat::WebP {
+        // Encoded through `image_webp` directly rather than through
+        // `ImageService::encode_webp`. This file is `#[path]`-included into
+        // several different crates - the bench targets, the `benchmark` bin
+        // and the lib - so an absolute `emgr::...` path resolves in some of
+        // them and not others ("use of unresolved crate `emgr`" from the lib,
+        // where `emgr` *is* the current crate). Naming the dependency works
+        // everywhere, and mirrors `encode_webp`'s own settings.
+        let rgba = img.to_rgba8();
+        let mut out = Vec::new();
+        let mut encoder = image_webp::WebPEncoder::new(Cursor::new(&mut out));
+        let mut params = image_webp::EncoderParams::default();
+        params.use_lossy = true;
+        params.lossy_quality = 82;
+        encoder.set_params(params);
+        encoder
+            .encode(
+                rgba.as_raw(),
+                rgba.width(),
+                rgba.height(),
+                image_webp::ColorType::Rgba8,
+            )
+            .expect("fixture WebP encoding should never fail");
+        return out;
+    }
+
     let mut buf = Cursor::new(Vec::new());
     img.write_to(&mut buf, format)
         .expect("fixture encoding should never fail");
