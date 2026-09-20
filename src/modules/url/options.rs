@@ -328,13 +328,19 @@ impl ProcessingOptions {
                 // {overshoot_deringing}:{optimize_scans}:{quant_table}`
                 // option (#76,
                 // <https://docs.imgproxy.net/usage/processing#jpeg-options>).
-                // Only the first two slots are implemented - `mozjpeg::Compress`
-                // (this crate's only route to progressive/subsampling
-                // control, see `ImageService::encode_jpeg`) has no direct
-                // equivalent of imgproxy's trellis-quantization/overshoot-
-                // deringing/quant-table knobs, so accepting and silently
-                // ignoring those slots would be a worse trap than rejecting
-                // them outright - same reasoning as `webpo`'s partial
+                // Only the first two slots are implemented, and the C-dependency removal made
+                // that more firmly true rather than less: the encoder behind
+                // `ImageService::encode_jpeg` is now the pure-Rust
+                // `jpeg-encoder`, which exposes progressive and subsampling
+                // control but implements no trellis quantisation at all, so
+                // imgproxy's trellis-quantization/overshoot-deringing/
+                // quant-table slots have no equivalent to map onto. (Under
+                // the previous `mozjpeg::Compress` encoder those knobs
+                // existed in the C library but were not reachable through
+                // the binding's API - so the slots were unimplemented then
+                // too, for a different reason.) Accepting and silently
+                // ignoring them would be a worse trap than rejecting them
+                // outright - same reasoning as `webpo`'s partial
                 // implementation just above. Each of the two implemented
                 // slots may be omitted (a shorter segment) or left blank
                 // (`jpgo:1:`) to keep its own default - "use this
