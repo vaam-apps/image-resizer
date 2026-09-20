@@ -27,7 +27,10 @@ image:
   # here rendered the doubled, non-existent `ghcr.io/ghcr.io/...`
   # reference. Leave this empty; `repository` carries the full path.
   registry: ""
-  repository: ghcr.io/vaam-store/image-resizer
+  # `vaam-store` until 2026-09-20 — see helm/emgr/values.yaml for the
+  # measurement. The old path still resolves but is a frozen, separate
+  # package with a different digest, so this silently served stale images.
+  repository: ghcr.io/vaam-apps/image-resizer
   # GH #85: `latest` matches no tag `.github/workflows/build.yml` actually
   # publishes - every published tag is flavour-prefixed (fs-latest,
   # fs_otel-latest, s3-latest, s3_otel-latest, plus per-commit
