@@ -146,9 +146,27 @@ vaam-image-webp = { git = "https://github.com/vaam-apps/vaam-image-webp", rev = 
 # a C toolchain and NASM in every build image. `threading` is kept - it is
 # rayon, pure Rust, and AVIF encode is slow enough to want it.
 ravif = { version = "0.13", default-features = false, features = ["threading"] }
-# `default-features = false` drops avif-decode's `binary` feature, which exists
-# for its bundled CLI and pulls `lodepng` that nothing here calls.
-avif-decode = { version = "3", default-features = false }
+# This org's fork of kornelski/avif-decode, for one reason: rav1d's default
+# features include `asm`, whose build script assembles `.S` with a C compiler
+# and `.asm` with NASM on x86_64. Upstream avif-decode turns that off only for
+# non-x86 targets - and even there as a workaround for a rav1d packaging bug
+# (memorysafety/rav1d#1449), not as a policy - so an x86_64 build needs a
+# toolchain this project's images no longer ship.
+#
+# It has to be fixed in the dependency's own manifest: Cargo feature
+# unification is additive, so declaring `rav1d = { default-features = false }`
+# here would NOT switch off what avif-decode already turned on. That is the
+# whole reason this is a fork rather than a feature line.
+#
+# Trade-off, stated rather than hidden: dav1d's assembly is a large part of why
+# it is fast, and this gives that up on x86_64. It has not been benchmarked on
+# x86_64 hardware. aarch64 was already running asm-free upstream.
+#
+# `default-features = false` additionally drops the `binary` feature, which
+# exists for the crate's bundled CLI and pulls `lodepng` that nothing here
+# calls. The Rust lib target is still `avif_decode`, so call sites are
+# unchanged. Retire this fork if upstream gains a feature flag for rav1d's asm.
+vaam-avif-decode = { git = "https://github.com/vaam-apps/vaam-avif-decode", rev = "b938566", default-features = false }
 # Container parsing, used directly by `avif_codec::peek_dimensions` to read
 # dimensions from the AV1 sequence header without decoding a frame.
 # `avif-decode` offers no way to get dimensions short of a full rav1d decode,

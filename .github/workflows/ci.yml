@@ -202,43 +202,99 @@ jobs:
       # Runs with --all-features on purpose, same reasoning as cargo-deny
       # above: aws-lc-sys enters only through the optional `s3` feature, so a
       # default-feature check would not see the single most likely regression.
-      - name: assert no native-code build dependencies
+      # Checked for BOTH targets, not just the runner's. This job originally
+      # tested only the host and reported a clean graph while the x86_64 build
+      # genuinely needed NASM - `avif-decode` declares rav1d twice, once per
+      # target, and only the non-x86 table sets `default-features = false`, so
+      # `asm` (and with it nasm-rs and cc) is enabled on x86_64 alone. A
+      # host-only check on an arm64 runner or an Apple Silicon laptop passes
+      # while `docker build --platform linux/amd64` fails on missing nasm.
+      #
+      # `-e all` rather than `-e build`: optional, feature-gated,
+      # target-specific build-dependencies do not reliably show up under
+      # `-e build`, which is the other half of how the same miss happened.
+      # Checks the FEATURE, not the crate. That distinction is the whole
+      # reason this job is shaped the way it is, and the obvious-looking
+      # version of it does not work:
+      #
+      #   * `cc` and `nasm-rs` are in the graph unconditionally, because rav1d
+      #     declares them as plain build-dependencies. But both are ordinary
+      #     Rust crates that merely *drive* external tools, and rav1d's
+      #     `build.rs` `main()` is entirely `#[cfg(feature = "asm")]` - with
+      #     the feature off, neither is ever called. Failing on their presence
+      #     would fail forever, on a build that needs no toolchain at all.
+      #   * `cargo tree -e build` does NOT reliably surface optional,
+      #     feature-gated, target-specific build-dependencies, so a forward
+      #     build-edge scan can report a clean graph for a build that really
+      #     does need NASM.
+      #   * `cargo tree -i <crate>` exits 0 even when it prints "nothing to
+      #     print", so testing its exit status finds everything, always.
+      #
+      # An earlier version of this job made all three mistakes at once and
+      # passed while the amd64 image build was broken.
+      #
+      # Both targets are checked because this is exactly where it hid: the
+      # avif-decode fork aside, upstream enables rav1d's asm on x86_64 only, so
+      # a host-only check on an arm64 runner or an Apple Silicon laptop passes
+      # while `docker build --platform linux/amd64` fails on missing nasm.
+      - name: assert no assembly or native toolchain is required
         run: |
           set -euo pipefail
+          rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 
-          echo "::group::build-dependency graph"
-          cargo tree --all-features -e build --prefix none --format '{p}' \
-            | sed 's/ (\*)//' | sort -u > build-deps.txt
-          cat build-deps.txt
-          echo "::endgroup::"
+          fail=0
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            echo "::group::$target"
+            enabled=$(cargo tree --all-features -e features --target "$target" \
+                        | grep -E 'feature "asm' | sort -u || true)
+            if [ -n "$enabled" ]; then
+              echo "::error::An assembly feature is enabled for $target - the build now needs an assembler and a C compiler."
+              echo "$enabled"
+              fail=1
+            else
+              echo "no asm features enabled"
+            fi
+            echo "::endgroup::"
+          done
 
-          # `cc` compiles C/C++, `cmake`/`meson` drive native build systems and
-          # `nasm-rs` assembles. Any of them means something vendored C again.
-          if grep -qiE '^(cc|cmake|nasm-rs|bindgen) ' build-deps.txt; then
-            echo "::error::A dependency reintroduced a native build step."
-            grep -iE '^(cc|cmake|nasm-rs|bindgen) ' build-deps.txt
-            echo "Find the culprit with: cargo tree --all-features -e build -i <crate>"
+          # cmake/meson/bindgen have no such feature subtlety: if they are in
+          # the graph at all, something is compiling native source.
+          for crate in cmake bindgen; do
+            out=$(cargo tree --all-features -e normal,build \
+                    --target x86_64-unknown-linux-gnu -i "$crate" 2>/dev/null || true)
+            if printf '%s' "$out" | grep -q "^$crate v"; then
+              echo "::error::$crate is in the dependency graph - a dependency is building native source."
+              printf '%s\n' "$out" | head -20
+              fail=1
+            fi
+          done
+
+          [ "$fail" -eq 0 ] || {
+            echo "The build must need only rustc. See the Dockerfile's own note."
             exit 1
-          fi
+          }
+          echo "OK: no assembly, no native toolchain."
 
-          echo "::group::normal-dependency graph (-sys crates)"
-          cargo tree --all-features -e normal --prefix none --format '{p}' \
-            | sed 's/ (\*)//' | sort -u > normal-deps.txt
-          grep -iE '(-sys )|^(ring|aws-lc-rs) ' normal-deps.txt || true
-          echo "::endgroup::"
+      # Separate concern from the toolchain check: a crate can link a prebuilt
+      # native library without compiling anything, which the feature scan above
+      # would not notice.
+      #
+      # Allowlist rather than a blanket `-sys` ban - these bind libraries that
+      # already exist on the target (macOS system frameworks, the Windows API,
+      # raw Linux syscalls, wasm/JS glue) and compile no source of their own.
+      - name: assert no native (-sys) libraries
+        run: |
+          set -euo pipefail
+          cargo tree --all-features -e normal --target x86_64-unknown-linux-gnu \
+            --prefix none --format '{p}' \
+            | sed 's/ (\*)//' | sort -u > deps.txt
 
-          # Allowlist, not a blanket -sys ban: core-foundation-sys and
-          # security-framework-sys bind macOS system frameworks that already
-          # exist on the machine. They compile no source and do not appear in
-          # a Linux graph at all, so they are not what this job is guarding
-          # against. Everything else is.
-          if grep -iE '(-sys )|^(ring|aws-lc-rs) ' normal-deps.txt \
+          if grep -iE '(-sys )|^(ring|aws-lc-rs) ' deps.txt \
               | grep -viE '^(core-foundation-sys|security-framework-sys|windows-sys|linux-raw-sys|wasi|js-sys|web-sys|jni-sys) '; then
-            echo "::error::A dependency reintroduced a native (-sys) library."
+            echo "::error::A dependency reintroduced a native library."
             exit 1
           fi
-
-          echo "OK: no C/C++ build dependencies."
+          echo "OK: no native libraries."
 
   docs-env-drift:
     name: Docs env-var drift check (GH #47)

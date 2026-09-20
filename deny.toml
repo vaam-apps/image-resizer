@@ -142,4 +142,10 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 #
 # This is meant to be temporary: when upstream releases lossy encoding, the
 # dependency should go back to crates.io and this entry should be deleted.
-allow-git = ["https://github.com/vaam-apps/vaam-image-webp"]
+allow-git = [
+    "https://github.com/vaam-apps/vaam-image-webp",
+    # Fork of kornelski/avif-decode, carried only to build rav1d without its
+    # `asm` feature on x86_64 - see Cargo.toml. Also meant to be temporary:
+    # an upstream feature flag would let this go back to crates.io.
+    "https://github.com/vaam-apps/vaam-avif-decode",
+]
