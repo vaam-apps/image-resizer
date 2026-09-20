@@ -181,30 +181,55 @@ handler.rs:126-135`).
 
 ## Codec choices
 
-- **JPEG decode and encode** go through `mozjpeg` (libjpeg-turbo bindings), not the `image` crate's
-  pure-Rust path — DCT-scaled decode when a resize makes a smaller decode safe, full-size decode
-  otherwise, with a fallback to the `image`-crate decoder on any mozjpeg failure. See `adr/0001-
-  image-engine.md` for the original engine decision and `.bench-baseline/BASELINE.md`'s "Post-#67
-  baseline" for the measured decode-side numbers.
+emgr has no C or C++ dependencies (C-dependency removal) — every codec below is pure Rust, built by `cargo` and
+linked directly into the binary. A `no-native-deps` CI job fails the build if any dependency
+reintroduces native code, and the Docker build no longer installs `nasm`, `cmake`, `meson`, or
+`ninja-build`. This did not remove every third-party notice obligation: `jpeg-encoder` is itself
+licensed `(MIT OR Apache-2.0) AND IJG`, so the Independent JPEG Group notice in `NOTICE` stays
+required — see [License](../about/license.md).
+
+- **JPEG decode and encode** go through `jpeg-decoder`/`jpeg-encoder`, pure-Rust crates, replacing
+  `mozjpeg`/libjpeg-turbo (C-dependency removal) — DCT-scaled decode (`jpeg-decoder`'s `Decoder::scale()`) when a
+  resize makes a smaller decode safe, full-size decode otherwise, with a fallback to the
+  `image`-crate (`zune-jpeg`) decoder on any `jpeg-decoder` failure. `jpeg-decoder` was picked
+  specifically for `scale()` — the faster `zune-jpeg` (what `image` decodes JPEG through) has no
+  scaled-decode API at all, so decoding through it here would silently drop that optimization.
+  `jpeg-encoder` carries the progressive-mode and raw APP-marker APIs the mozjpeg path relied on,
+  but does not implement trellis quantisation. See `adr/0001-image-engine.md` for the original
+  engine decision; `.bench-baseline/BASELINE.md`'s "Post-#67 baseline" numbers describe the
+  since-replaced mozjpeg implementation and have not been re-measured against the new one:
+  **TODO(re-measure)**.
 - **Resampling** uses the `fast_image_resize` crate rather than `image`'s own `DynamicImage::resize`
   kernel — several times faster at equivalent measured quality (DSSIM); see `.bench-baseline/
-  BASELINE.md`'s "Current baseline" section.
-- **WebP encode** goes through the `webp` crate (real lossy libwebp), not the `image` crate's
-  lossless-only WebP encoder. See `adr/0001-image-engine.md` (original rationale) and `adr/0003-
-  webp-measurement.md` (corrected byte-size measurement on real photos).
-- **WebP decode** (#66) goes through a dedicated real-libwebp FFI path
-  (`ImageService::decode_webp_libwebp`/`libwebp_decode`, `src/services/image/handler.rs:3294`),
-  replacing the `image` crate's pure-Rust `image-webp` decoder — ~29% *slower* on the synthetic
-  fixture but ~2.24x *faster* on 24 real Kodak photographs (scratch-crate measurement, pixel-identical
-  DSSIM 0.0, `adr/0003-webp-measurement.md`), with a fallback to the `image`-crate decoder on any
-  libwebp failure. The synthetic-vs-real inversion is why the criterion suite now benches both
-  fixture kinds — see [Testing](../development/testing.md#two-fixture-kinds-synthetic-and-photo).
-- **AVIF encode and decode** both go through `libavif` (`src/services/image/avif_codec.rs`) — AOM
-  for encode (replacing the pure-Rust `ravif`/`rav1e` encoder `adr/0004-avif-measurement.md`
-  measured) and dav1d for decode (previously unsupported). See that module's own doc comment for
-  the dependency/codec choice, and `adr/0005-avif-measurement-libavif-mozjpeg.md` for the
-  re-measured byte-size and encode-time numbers. `adr/0004` measured the
-  encoders this replaced and its figures are void - do not quote them.
+  BASELINE.md`'s "Current baseline" section. `fast_image_resize` was already pure Rust and is
+  unaffected by the C-dependency removal.
+- **WebP encode and decode** go through [`vaam-image-webp`](https://github.com/vaam-apps/vaam-image-webp),
+  this org's fork of `image-rs/image-webp` tracking its unreleased lossy VP8 encoder, replacing the
+  `webp` crate (real libwebp via FFI, used for encode) and the dedicated
+  `ImageService::decode_webp_libwebp`/`libwebp_decode` FFI path (used for decode) (C-dependency removal). No
+  published crate encodes lossy WebP in pure Rust as of this writing — `image-webp`'s released
+  version is lossless-only, and lossless WebP runs roughly 5-12x larger than lossy on photographic
+  content, which would make the format useless for this service's main job; the fork is pinned by
+  `rev`, not `branch`, and is temporary by construction, meant to be dropped once upstream cuts a
+  release with lossy encoding. See `adr/0001-image-engine.md` (original rationale for the
+  `webp`-crate cutover this replaces) and `adr/0003-webp-measurement.md` (its now-superseded
+  byte-size measurement). The libwebp-vs-`image-webp` numbers this section used to carry (~29%
+  *slower* on the synthetic fixture, ~2.24x *faster* on 24 real Kodak photographs, pixel-identical
+  DSSIM 0.0) described that older comparison and are unmeasured against `vaam-image-webp`:
+  **TODO(re-measure)**. The synthetic-vs-real inversion those numbers showed is still why the
+  criterion suite benches both fixture kinds — see
+  [Testing](../development/testing.md#two-fixture-kinds-synthetic-and-photo).
+- **AVIF encode and decode** go through pure-Rust crates instead of `libavif` (AOM + dav1d,
+  vendored C, previously `src/services/image/avif_codec.rs`) (C-dependency removal): `ravif` (wrapping `rav1e`) for
+  encode, `avif-decode` (wrapping `rav1d`, the Rust port of `dav1d`) for decode. On the encode side
+  this is a return to `ravif`/`rav1e` after `adr/0004-avif-measurement.md` and
+  `adr/0005-avif-measurement-libavif-mozjpeg.md` record the earlier evaluation that moved production
+  to `libavif`/AOM — those ADRs are the historical record of that call and are not revised here.
+  the C-dependency removal's motivation is dependency composition, not a re-run of that perceptual-quality comparison,
+  so whether AOM's measured edge over `rav1e` still holds against the `rav1e` release in use today
+  is unmeasured: **TODO(re-measure)**. See the `ravif`/`avif-decode` dependency comments in
+  `Cargo.toml` for the current codec/dependency choice. `adr/0004` measured the encoders this
+  replaced *before* #67/#68 and its figures were already void; the C-dependency removal does not revive them.
 
 ## Cache key design
 
@@ -286,12 +311,14 @@ would otherwise treat a transient failure as permanent.
 - **Language:** Rust (2024 edition).
 - **Web framework:** `axum`, with `tower_governor` for rate limiting and `tower-http` for
   compression/CORS.
-- **Image processing:** `image` (container formats, PNG/GIF/AVIF paths), `mozjpeg` (JPEG decode +
-  encode), `fast_image_resize` (resampling), `webp` crate (lossy WebP).
+- **Image processing:** `image` (container formats, PNG/GIF paths), `jpeg-decoder`/`jpeg-encoder`
+  (JPEG decode + encode), `vaam-image-webp` (WebP), `ravif`/`avif-decode` (AVIF),
+  `fast_image_resize` (resampling) — every codec is pure Rust (C-dependency removal); no C or C++ dependency
+  remains in the image-processing path.
 - **Storage:** `aws-sdk-s3` (S3/MinIO), local filesystem, in-memory (test-only).
 - **Observability:** OpenTelemetry tracing/metrics behind the `otel` Cargo feature
   (`src/modules/tracer/`), Prometheus-format `/metrics` behind bearer-token auth.
-- **Allocator:** `mimalloc` as the global allocator (`src/main.rs`).
+- **Allocator:** the platform `System` allocator (`src/main.rs`), replacing `mimalloc` (C-dependency removal).
 
 There is no generated OpenAPI server in this codebase today. The service used to be built around a
 `gen-server`/`packages/`/`openapi.yaml` generated router; that was removed as part of a hand-written-

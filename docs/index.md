@@ -10,8 +10,10 @@ redirects the caller to it.
 - On-the-fly resizing via an [imgproxy-compatible signed URL scheme](user-guide/api-reference.md) -
   resize/crop, gravity, quality, blur, grayscale, watermarks and named presets.
 - JPEG, PNG, WebP (lossy and lossless), AVIF and animated GIF/WebP output,
-  through a SIMD resampler (`fast_image_resize`) and a mozjpeg-backed JPEG
-  decode/encode path (DCT-scaled decode, progressive/subsampling control).
+  through a SIMD resampler (`fast_image_resize`) and a pure-Rust JPEG
+  decode/encode path (`jpeg-decoder`/`jpeg-encoder`; DCT-scaled decode,
+  progressive/subsampling control). Every image codec this service links —
+  JPEG, WebP, AVIF — is pure Rust; there are no C or C++ dependencies.
 - Pluggable storage backends selected at **compile time** via Cargo feature
   flags: local filesystem, S3/MinIO, or in-memory (test builds only).
 - HMAC-signed URLs **on by default**, an SSRF-guarded source fetcher, and

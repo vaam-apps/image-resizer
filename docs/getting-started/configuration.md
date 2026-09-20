@@ -108,9 +108,10 @@ See the [API reference](../user-guide/api-reference.md) for the `wm:`/`wmu:`,
 ## JPEG encoding
 
 Added under [GH #76](https://github.com/vaam-store/image-resizer/issues/76).
-JPEG output is encoded via `mozjpeg`/libjpeg-turbo rather than the `image`
-crate's own encoder, which has no progressive-mode switch and hardcodes
-4:2:2 chroma subsampling. See the [API reference](../user-guide/api-reference.md)
+JPEG output is encoded via [`jpeg-encoder`](https://docs.rs/jpeg-encoder)
+(a pure-Rust encoder, replacing `mozjpeg`/libjpeg-turbo as of the C-dependency removal) rather
+than the `image` crate's own encoder, which has no progressive-mode switch
+and hardcodes 4:2:2 chroma subsampling. See the [API reference](../user-guide/api-reference.md)
 for the `jpgo:{progressive}:{no_subsample}` and `mb:{bytes}` request-option
 syntax these variables set the deployment-wide default for - a request's
 own `jpgo:` segment always overrides these when present.

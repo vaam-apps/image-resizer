@@ -71,14 +71,14 @@ Never a redirect back to the caller-supplied source ([GH #25](https://github.com
 ## Image engine
 
 - **Resize**: [`fast_image_resize`](https://docs.rs/fast_image_resize) (SIMD), not the `image` crate's own resize kernel — roughly 5x faster on a downscale (`resize_fir/downscale lanczos3`: 3.43ms vs. the `image`-crate kernel's 17ms; see [`.bench-baseline/BASELINE.md`](.bench-baseline/BASELINE.md)).
-- **JPEG decode**: [`mozjpeg`](https://docs.rs/mozjpeg)/libjpeg-turbo, with DCT-scaled decode at 1/2, 1/4, or 1/8 resolution when the requested output is a ≥2x downscale, falling back to a full-size mozjpeg decode otherwise.
-- **JPEG encode**: `mozjpeg` at the `JCP_FASTEST` profile by default — smaller and faster than the old `image`-crate encoder on every axis measured. Explicitly-requested progressive output (`jpgo:1:...`) gets the full `JCP_MAX_COMPRESSION` profile instead, since that cost (~19x baseline) is opt-in only.
-- **WebP encode**: the [`webp`](https://docs.rs/webp) crate — real libwebp, lossy and lossless, plus animated WebP via `AnimEncoder`.
-- **WebP decode**: real `libwebp` via FFI, not the `image` crate's pure-Rust `image-webp` decoder — falls back to it only if the libwebp path fails.
-- **AVIF encode and decode**: both directions via [`libavif`](src/services/image/avif_codec.rs) — AOM for encode, dav1d for decode. AVIF is now a supported *source* format, not just an output one; it used to be rejected outright. This replaced the pure-Rust `ravif`/`rav1e` encoder this service previously shipped.
+- **JPEG decode**: [`jpeg-decoder`](https://docs.rs/jpeg-decoder), with DCT-scaled decode at 1/2, 1/4, or 1/8 resolution via `Decoder::scale()` when the requested output is a ≥2x downscale, falling back to a full-size decode otherwise. Chosen specifically for `scale()` — the faster `zune-jpeg` (what the `image` crate decodes JPEG through) has no scaled-decode API at all, so using it here would silently drop that optimization. `jpeg-decoder` is in maintenance mode upstream; it's depended on for an API that isn't going to change, not for ongoing development.
+- **JPEG encode**: [`jpeg-encoder`](https://docs.rs/jpeg-encoder), a pure-Rust encoder with its own AVX2 path, replacing `mozjpeg`. It carries the APIs the mozjpeg path relied on (`set_progressive`, `set_quantization_tables`, `add_app_segment` for the raw EXIF/ICC markers), but does not implement trellis quantization, so output is expected to be measurably larger than mozjpeg's at matched quality.
+- **WebP encode and decode**: [`vaam-image-webp`](https://github.com/vaam-apps/vaam-image-webp), this org's fork of `image-rs/image-webp` tracking its unreleased lossy VP8 encoder, replacing the `webp` crate (libwebp). No published crate encodes lossy WebP in pure Rust — `image-webp`'s released version is lossless-only, and lossless WebP runs roughly 5-12x larger than lossy on photographic content, which would make the format useless for this service's main job. The fork is temporary by construction: once upstream cuts a release with lossy encoding, this goes back to the crates.io crate and the fork is archived.
+- **AVIF encode**: [`ravif`](https://docs.rs/ravif) (wrapping `rav1e`), replacing `libavif-sys`'s AOM backend.
+- **AVIF decode**: [`avif-decode`](https://docs.rs/avif-decode) (wrapping `rav1d`, the Rust port of `dav1d`), replacing `libavif-sys`'s dav1d backend. Preferred over depending on `rav1d` directly, whose public surface is still dav1d's C-shaped API — `avif-decode` offers a plain `from_avif` → `to_image` Rust interface. AVIF remains a supported *source* format as well as an output one (it used to be rejected outright before #67/#68).
 - **PNG / GIF**: the `image` crate.
 
-**All four native codec libraries (mozjpeg, libwebp, libavif, AOM/dav1d) are compiled from source and statically linked** — the runtime container ships no codec `.so` files.
+**emgr has no C or C++ dependencies (C-dependency removal)** — every codec above is pure Rust, built by `cargo` like any other dependency and linked directly into the binary. The Docker build and CI no longer install `nasm`, `cmake`, `meson`, or `ninja-build`, and a `no-native-deps` CI job fails the build if any dependency reintroduces native code. This did *not* remove every third-party notice obligation: `jpeg-encoder` is itself licensed `(MIT OR Apache-2.0) AND IJG` — its default quantization and Huffman tables derive from the Independent JPEG Group reference implementation — so the IJG notice in [`NOTICE`](NOTICE) stays required. See `NOTICE` for the full per-codec licence table.
 
 **HEIC is not supported** — neither as a source nor as an output format.
 
@@ -155,7 +155,7 @@ Full grammar and every response code: [API reference](docs/user-guide/api-refere
 
 **Cold cache** (per delivered image, imgproxy v4.0.13, three-way `bench-imgproxy/` harness — see [`.bench-baseline/BASELINE.md`](.bench-baseline/BASELINE.md) for every run, backend, and `FORMATS` configuration this is drawn from):
 
-**emgr is roughly 3.48x slower on p50 and delivers roughly 2.86x less throughput than imgproxy on a cold cache.** This project does not claim parity with imgproxy on raw processing speed, and this README will not pretend otherwise. The exact ratio moves with storage backend (`local_fs` vs `s3`) and which output formats are in play, but the gap has consistently been in the 3x-4x (p50) / ~2.6x-2.9x (throughput) range across every measured configuration.
+**TODO(re-measure)** (was: "emgr is roughly 3.48x slower on p50 and delivers roughly 2.86x less throughput than imgproxy on a cold cache," with the gap reported as consistently 3x-4x on p50 / ~2.6x-2.9x on throughput across every measured configuration). That comparison ran the full processing pipeline through the old C codecs (`mozjpeg`, libwebp, `libavif`/AOM/dav1d); with all of them replaced by pure-Rust equivalents (C-dependency removal), the ratio needs re-measuring before it can be quoted again. This project does not claim parity with imgproxy on raw processing speed, and this README will not pretend otherwise — but until the numbers above are re-run, no specific ratio is asserted either.
 
 **Warm cache** (repeat request for an already-processed image): **emgr ~0.39 ms vs. imgproxy ~21 ms.**
 
@@ -165,18 +165,18 @@ Micro-benchmarks (single-operation, criterion, darwin/arm64, synthetic fixture �
 
 | Operation | Time |
 |---|---:|
-| JPEG decode, 1920x1080 | 7.32 ms |
-| JPEG encode (baseline) | 930 µs |
-| JPEG encode (progressive) | 17.58 ms |
+| JPEG decode, 1920x1080 | **TODO(re-measure)** (was: 7.32 ms, via `mozjpeg`/libjpeg-turbo) |
+| JPEG encode (baseline) | **TODO(re-measure)** (was: 930 µs, via `mozjpeg`'s `JCP_FASTEST` profile) |
+| JPEG encode (progressive) | **TODO(re-measure)** (was: 17.58 ms, via `mozjpeg`'s `JCP_MAX_COMPRESSION` profile) |
 | PNG encode (production path: `CompressionType::Best`) | 98.93 ms |
-| WebP encode | 23.66 ms |
-| WebP decode, 1920x1080 (libwebp) | 32.27 ms |
-| AVIF encode (`DEFAULT_AVIF_SPEED = 6`) | 65.89 ms |
-| AVIF decode, 1920x1080 (dav1d) | 55.13 ms |
+| WebP encode | **TODO(re-measure)** (was: 23.66 ms, via the `webp` crate / real libwebp) |
+| WebP decode, 1920x1080 | **TODO(re-measure)** (was: 32.27 ms, via real libwebp through FFI) |
+| AVIF encode (`DEFAULT_AVIF_SPEED = 6`) | **TODO(re-measure)** (was: 65.89 ms, via `libavif`/AOM) |
+| AVIF decode, 1920x1080 | **TODO(re-measure)** (was: 55.13 ms, via `libavif`/dav1d) |
 | Resize, downscale, Lanczos3 (`fast_image_resize`) | 3.43 ms |
 | Resize, downscale, Triangle→Bilinear (`fast_image_resize`) | 1.15 ms |
-| Full pipeline, photo → thumbnail JPEG | 6.15 ms |
-| Full pipeline, 4K photo → large downscale | 19.59 ms |
+| Full pipeline, photo → thumbnail JPEG | **TODO(re-measure)** (was: 6.15 ms; pipeline includes JPEG decode+encode, now on pure-Rust codecs) |
+| Full pipeline, 4K photo → large downscale | **TODO(re-measure)** (was: 19.59 ms; pipeline includes JPEG decode+encode, now on pure-Rust codecs) |
 
 PNG's number above is the one that used to read as 1.71 ms in this table — that measured the `image` crate's default `CompressionType::Fast`, which production never uses; `encode_single_image` builds an explicit `CompressionType::Best` encoder, ~56x more expensive on this fixture. See `.bench-baseline/BASELINE.md`'s "PNG encode correction" section for the full story.
 

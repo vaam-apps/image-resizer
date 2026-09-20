@@ -8,11 +8,12 @@ startup checks that fail closed by design, to a working `/health` response.
 - A stable Rust toolchain. `Cargo.toml` sets `edition = "2024"`, which needs
   Rust 1.85 or newer; CI builds against whatever `dtolnay/rust-toolchain@stable`
   currently resolves to, so there's no lower pin to target beyond that.
-- `nasm`, **only when building on x86_64** (Linux/macOS amd64). It's needed
-  by `mozjpeg-sys` for libjpeg-turbo's x86 SIMD path. aarch64 (Apple
-  Silicon, arm64 Linux) doesn't need it - it uses its own NEON path. If
-  you're on x86_64 and skip it, the build either fails outright or falls
-  back to scalar C, quietly losing most of the mozjpeg decode speedup.
+  Nothing else: `emgr` has no C or C++ dependencies (C-dependency removal), so there's no
+  native toolchain to install (`nasm`, `cmake`, `meson`, `ninja-build` used
+  to be required here, for `mozjpeg-sys`/`libavif-sys`'s vendored C builds;
+  a `no-native-deps` CI job now fails the build if any dependency
+  reintroduces one). `cargo build` is a self-contained Rust build on every
+  supported target.
 - [Docker](https://docs.docker.com/get-docker/) and
   [Docker Compose](https://docs.docker.com/compose/) v2 (optional - see
   [Docker deployment](../deployment/docker.md)).

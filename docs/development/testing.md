@@ -128,9 +128,10 @@ criterion's own report:
 Both exist because i.i.d. per-pixel noise compresses toward an
 incompressible floor that flattens real differences between codecs -  a
 distortion that turns out to affect encode *cost*, not just output size
-(`benches/encode.rs:1-8`). The `photo` kind is what actually exercises
-libwebp/dav1d/AOM/mozjpeg the way a real request would; `synthetic` stays
-for fast, deterministic micro-comparisons.
+(`benches/encode.rs:1-8`). The `photo` kind is what actually exercises the
+codec stack (`vaam-image-webp`, `avif-decode`/`ravif`, `jpeg-decoder`/
+`jpeg-encoder` - all pure Rust as of the C-dependency removal) the way a real request would;
+`synthetic` stays for fast, deterministic micro-comparisons.
 
 ### Three-way harness against imgproxy (`bench-imgproxy/`)
 
