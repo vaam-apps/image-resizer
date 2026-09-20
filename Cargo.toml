@@ -52,40 +52,115 @@ name = "pipeline"
 harness = false
 
 [dependencies]
-mimalloc = "0.1"
-
 axum = { version = "0.8", features = ["tracing", "tokio", "macros"] }
 axum-otel-metrics = { version = "0.11" }
 axum-tracing-opentelemetry = { version = "0.39" }
-tower-http = { version = "0.6", features = ["compression-full", "cors"] }
+# NOT "compression-full" (C-dependency removal): that feature is gzip+brotli+deflate+zstd,
+# and the zstd arm is the only one that is not pure Rust - it resolves to
+# `zstd-sys`, which compiles the C zstd library from source. gzip/deflate
+# go through flate2's default `miniz_oxide` backend and brotli through the
+# pure-Rust `brotli` crate, so naming the other three explicitly keeps every
+# content-encoding this service actually negotiates while dropping the C
+# dependency. Listing them individually rather than using the umbrella
+# feature is also what stops a future tower-http from silently
+# reintroducing zstd under `compression-full`.
+tower-http = { version = "0.6", features = [
+    "compression-gzip",
+    "compression-br",
+    "compression-deflate",
+    "cors",
+] }
 
 tokio = { version = "1", features = ["full"] }
 
-reqwest = { version = "0.13", features = ["json", "stream", "http2", "gzip"] } # Optimized HTTP client
-# default-features = false (#67/#68): `image`'s own `default` feature set
-# pulls in `default-formats`, which includes `avif` (ravif/rav1e) among
-# many formats this crate never uses (bmp/dds/exr/ff/hdr/ico/pnm/qoi/tga/
-# tiff) - `features = [...]` alone is *additive* to defaults, not a
-# replacement for them, so the explicit "jpeg"/"png"/"webp"/"gif" list
-# below was never actually narrowing anything before this change; every
-# one of those extra formats (plus `ravif`/`rav1e`, replaced by
-# `libavif-sys` - see that dependency's own comment) was still being
-# compiled in regardless. `rayon` (also part of `default`) is dropped too:
-# nothing in this crate's code calls an `image`-crate API gated behind it.
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] } # gif for animation groundwork
-# AVIF encode+decode (#67/#68): dropped `image`'s own "avif" feature
-# (ravif/rav1e, encode-only, no AVIF *decode* at all - see the `ImageFormat`
-# doc comment in src/models/params.rs) in favour of `libavif-sys`, which
-# covers both directions through one dependency - real libavif (vendored C
-# source, built from source via `cmake`, statically linked) with AOM
-# (encode) and dav1d (decode) as its only compiled-in codecs. See
-# src/services/image/avif_codec.rs's own module doc comment for why this
-# crate over the alternatives evaluated (`avif-rs` downloads prebuilt
-# binaries from a third-party GitHub release at build time - rejected as a
-# supply-chain regression; the high-level `libavif` crate has no EXIF-write
-# API), and why AOM only, not AOM+SVT-AV1 (no crates.io libavif binding
-# wires SVT-AV1 into its build script).
-libavif-sys = { version = "0.17", default-features = false, features = ["codec-aom", "codec-dav1d"] }
+# `default-features = false` + `rustls-no-provider` (C-dependency removal): reqwest's default
+# `rustls` feature expands to `__rustls-aws-lc-rs`, which hardwires
+# `aws-lc-rs`/`aws-lc-sys` - a large C and assembly codebase - as rustls's
+# crypto provider. `rustls-no-provider` gives the same rustls stack with no
+# provider compiled in; `main.rs` installs the pure-Rust Graviola provider as
+# the process-wide default instead. This makes that installation
+# load-bearing: with no default provider installed, reqwest panics when a
+# Client is built, which is why `install_crypto_provider()` runs first thing
+# in `main`, before anything can construct one.
+# reqwest's `zstd` feature stays off for the same reason as tower-http's.
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "stream",
+    "http2",
+    "gzip",
+    "rustls-no-provider",
+] }
+# default-features = false (#67/#68, still true): `image`'s own `default`
+# feature set pulls in `default-formats` - bmp/dds/exr/ff/hdr/ico/pnm/qoi/tga/
+# tiff, none of which this crate handles - plus `rayon`, which nothing here
+# calls. `features = [...]` is *additive* to defaults rather than a
+# replacement, so the explicit list below only narrows anything with
+# `default-features = false` alongside it.
+#
+# `webp` is deliberately NOT in this list (C-dependency removal). `image` would satisfy it with
+# its own copy of `image-webp`, whose released version encodes losslessly only;
+# WebP in this service goes through the `vaam-image-webp` fork below instead,
+# in both directions, so that exactly one WebP implementation is linked in.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif"] } # gif for animation groundwork
+
+# WebP (C-dependency removal): replaces the `webp` crate, which bound libwebp (C).
+#
+# There is no published pure-Rust lossy WebP encoder. `image-webp` - the crate
+# `image` itself uses - encodes lossless only as of its current 0.2.4 release,
+# and lossless WebP runs roughly 5-12x larger than lossy on photographic
+# content, which would make the format useless for this service's main job.
+#
+# Upstream's `main` branch does have a working lossy VP8 encoder (image-rs/
+# image-webp#161, #164, #172); it simply has not been cut into a release. This
+# fork tracks that branch so the dependency is a revision this org controls
+# rather than a floating upstream SHA. Pinned by `rev`, not `branch`: an
+# unreleased encoder moving under us is exactly the failure this pin prevents.
+#
+# Temporary by construction - when upstream releases lossy encoding, this
+# should go back to the crates.io crate and the fork should be archived.
+vaam-image-webp = { git = "https://github.com/vaam-apps/vaam-image-webp", rev = "058cea8" }
+
+# AVIF (C-dependency removal): `libavif-sys` is gone. It vendored and compiled three C
+# libraries from source - libavif itself, AOM for encode, dav1d for decode -
+# needing cmake, meson, ninja and nasm in every build image. Replaced by one
+# pure-Rust crate per direction:
+#
+# - encode: `ravif`, wrapping `rav1e`. ravif already declares rav1e with
+#   `default-features = false`, and rav1e's `asm` feature (which pulls
+#   `nasm-rs` *and* `cc`) is in its *default* set - so this needs neither NASM
+#   nor a C compiler, with nothing to configure here.
+# - decode: `avif-decode`, wrapping `rav1d` (the Rust port of dav1d) plus
+#   `avif-parse` for the container. Preferred over depending on `rav1d`
+#   directly, whose public surface is still dav1d's C-shaped API, where
+#   avif-decode offers a plain `from_avif` -> `to_image` Rust interface.
+#
+# See `src/services/image/avif_codec.rs` for the measured cost of this swap
+# against the AOM encoder it replaces.
+ravif = "0.13"
+avif-decode = "3"
+# Pixel-buffer types appearing in ravif's and avif-decode's public signatures.
+rgb = "0.8"
+imgref = "1.12"
+
+# JPEG (C-dependency removal): replaces `mozjpeg`, which bound mozjpeg/libjpeg-turbo (C, plus
+# NASM for its SIMD kernels) and covered both directions here.
+#
+# - encode: `jpeg-encoder`, pure Rust with its own AVX2 path. It carries the
+#   APIs the mozjpeg path relied on - `set_progressive`,
+#   `set_quantization_tables`, and `add_app_segment` for the raw APP1/APP2
+#   markers EXIF and ICC are written through. What it does not implement is
+#   trellis quantisation, so JPEGs get measurably larger at matched quality;
+#   `ImageService::encode_jpeg` records the number.
+# - decode: `jpeg-decoder`, for one specific reason - `Decoder::scale()`, the
+#   DCT-scaled decode (1/8, 1/4, 1/2) that lets a downscale request skip
+#   decoding at full resolution. `image` 0.25 decodes JPEG through `zune-jpeg`,
+#   which is faster but exposes no scaled-decode API at all, so dropping to it
+#   would silently delete that optimisation. `jpeg-decoder` is in maintenance
+#   mode upstream; it is depended on here for an API that is not going to
+#   change rather than for ongoing development.
+jpeg-encoder = "0.7"
+jpeg-decoder = "0.3"
+
 num_cpus = "1.16" # CPU detection for optimal thread pool sizing
 bytes = "1.5" # Efficient byte handling
 futures = "0.3" # Stream processing utilities
@@ -132,12 +207,25 @@ tracing = { version = "0.1", features = ["attributes"] }
 prometheus = { version = "0.14", optional = true }
 dashmap = "6"
 tower_governor = "0.8"
-webp = "0.3"
 hmac = "0.12"   # NOT 0.13: it needs digest 0.11, i.e. the sha2 0.11 generation the pin above deliberately refuses
 subtle = "2.6"
 base64 = "0.23"
 fast_image_resize = { version = "6.1", features = ["image"] }
-mozjpeg = "0.10"
+
+# rustls crypto provider (C-dependency removal). `rustls` is already in the graph via
+# reqwest; it is named here so the provider can be installed explicitly at
+# startup. `default-features = false` keeps reqwest's `rustls-no-provider`
+# choice from being undone - rustls's own default features would pull
+# `aws-lc-rs` straight back in, which is the entire thing being removed.
+#
+# Graviola is pure Rust (its assembly-derived routines are Rust `inline!`
+# from formally-verified s2n-bignum, not an external assembler step) and is
+# maintained by rustls's own author. It is young - its README says as much -
+# and it requires AES-NI/AVX2 on x86_64 or the ARMv8 crypto extensions on
+# aarch64, i.e. anything since roughly 2014. Both the Docker base image and
+# CI runners clear that bar; a build targeting older hardware would not.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }
+rustls-graviola = "0.4"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
