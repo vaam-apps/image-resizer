@@ -118,7 +118,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 #
 # Temporary by construction - when upstream releases lossy encoding, this
 # should go back to the crates.io crate and the fork should be archived.
-vaam-image-webp = { git = "https://github.com/vaam-apps/vaam-image-webp", rev = "058cea8" }
+vaam-image-webp = { git = "https://github.com/vaam-apps/vaam-image-webp", rev = "e4d12e5" }
 
 # AVIF (C-dependency removal): `libavif-sys` is gone. It vendored and compiled three C
 # libraries from source - libavif itself, AOM for encode, dav1d for decode -
