@@ -54,18 +54,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # libdav1d-sys builds dav1d from source via meson/ninja, and
-      # libavif-sys/libaom-sys build libavif and AOM via cmake with nasm for
-      # SIMD. The Dockerfile installs these for the image build; the runners
-      # that compile the crate directly need them too. Adding them to the
-      # Dockerfile alone is what broke this job on its first run - a build
-      # dependency declared in one place and not the other.
-      - name: install native codec build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake meson ninja-build nasm
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -83,18 +71,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      # libdav1d-sys builds dav1d from source via meson/ninja, and
-      # libavif-sys/libaom-sys build libavif and AOM via cmake with nasm for
-      # SIMD. The Dockerfile installs these for the image build; the runners
-      # that compile the crate directly need them too. Adding them to the
-      # Dockerfile alone is what broke this job on its first run - a build
-      # dependency declared in one place and not the other.
-      - name: install native codec build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake meson ninja-build nasm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -199,6 +175,71 @@ jobs:
         with:
           command: check
 
+  no-native-deps:
+    name: no C/C++ build dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The C-dependency removal took every C and C++ dependency out of this service: mozjpeg-sys
+      # (libjpeg-turbo), libavif-sys/libaom-sys/libdav1d-sys, libwebp-sys,
+      # libmimalloc-sys, zstd-sys and aws-lc-sys are all gone, replaced by
+      # pure-Rust crates. Nothing in the build compiles C, assembles NASM, or
+      # needs cmake or meson any more, which is why neither the Dockerfile nor
+      # any job in this workflow installs a toolchain.
+      #
+      # That property is invisible in review and trivial to lose: one
+      # transitive dependency flipping on a default feature is enough, and the
+      # symptom would be a confusing linker or "nasm not found" failure in
+      # whichever job happened to build first - or worse, no failure here at
+      # all and a broken `docker build` later, since the runners and the image
+      # are separate places that would each need the toolchain added back.
+      # Fail loudly and specifically instead.
+      #
+      # Runs with --all-features on purpose, same reasoning as cargo-deny
+      # above: aws-lc-sys enters only through the optional `s3` feature, so a
+      # default-feature check would not see the single most likely regression.
+      - name: assert no native-code build dependencies
+        run: |
+          set -euo pipefail
+
+          echo "::group::build-dependency graph"
+          cargo tree --all-features -e build --prefix none --format '{p}' \
+            | sed 's/ (\*)//' | sort -u > build-deps.txt
+          cat build-deps.txt
+          echo "::endgroup::"
+
+          # `cc` compiles C/C++, `cmake`/`meson` drive native build systems and
+          # `nasm-rs` assembles. Any of them means something vendored C again.
+          if grep -qiE '^(cc|cmake|nasm-rs|bindgen) ' build-deps.txt; then
+            echo "::error::A dependency reintroduced a native build step."
+            grep -iE '^(cc|cmake|nasm-rs|bindgen) ' build-deps.txt
+            echo "Find the culprit with: cargo tree --all-features -e build -i <crate>"
+            exit 1
+          fi
+
+          echo "::group::normal-dependency graph (-sys crates)"
+          cargo tree --all-features -e normal --prefix none --format '{p}' \
+            | sed 's/ (\*)//' | sort -u > normal-deps.txt
+          grep -iE '(-sys )|^(ring|aws-lc-rs) ' normal-deps.txt || true
+          echo "::endgroup::"
+
+          # Allowlist, not a blanket -sys ban: core-foundation-sys and
+          # security-framework-sys bind macOS system frameworks that already
+          # exist on the machine. They compile no source and do not appear in
+          # a Linux graph at all, so they are not what this job is guarding
+          # against. Everything else is.
+          if grep -iE '(-sys )|^(ring|aws-lc-rs) ' normal-deps.txt \
+              | grep -viE '^(core-foundation-sys|security-framework-sys|windows-sys|linux-raw-sys|wasi|js-sys|web-sys|jni-sys) '; then
+            echo "::error::A dependency reintroduced a native (-sys) library."
+            exit 1
+          fi
+
+          echo "OK: no C/C++ build dependencies."
+
   docs-env-drift:
     name: Docs env-var drift check (GH #47)
     runs-on: ubuntu-latest
@@ -220,18 +261,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      # libdav1d-sys builds dav1d from source via meson/ninja, and
-      # libavif-sys/libaom-sys build libavif and AOM via cmake with nasm for
-      # SIMD. The Dockerfile installs these for the image build; the runners
-      # that compile the crate directly need them too. Adding them to the
-      # Dockerfile alone is what broke this job on its first run - a build
-      # dependency declared in one place and not the other.
-      - name: install native codec build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake meson ninja-build nasm
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -271,18 +300,6 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-
-      # libdav1d-sys builds dav1d from source via meson/ninja, and
-      # libavif-sys/libaom-sys build libavif and AOM via cmake with nasm for
-      # SIMD. The Dockerfile installs these for the image build; the runners
-      # that compile the crate directly need them too. Adding them to the
-      # Dockerfile alone is what broke this job on its first run - a build
-      # dependency declared in one place and not the other.
-      - name: install native codec build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake meson ninja-build nasm
 
       - uses: dtolnay/rust-toolchain@stable
 

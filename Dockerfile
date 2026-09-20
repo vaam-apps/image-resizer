@@ -1,13 +1,17 @@
 # MUST stay on bookworm (Debian 12) to match the distroless/cc-debian12
-# runtime below. The previous pin was a Debian 13/trixie image with glibc
-# 2.41 while the runtime has 2.36, so the s3 build - whose native C
-# dependency (aws-lc-sys) references GLIBC_2.38 symbols - produced an image
-# that built cleanly and then died instantly at startup with
+# runtime below. A previous pin was a Debian 13/trixie image with glibc 2.41
+# against a runtime with 2.36, and the s3 build - whose native C dependency
+# aws-lc-sys referenced GLIBC_2.38 symbols - produced an image that built
+# cleanly and then died instantly at startup with
 #   version 'GLIBC_2.38' not found
 # CI never caught it: the pipeline builds images and never runs one.
-# local_fs survived only by luck - it happens not to reference those
-# symbols. If you bump this, bump the runtime base in lockstep and actually
-# RUN the resulting image.
+#
+# The C-dependency removal took out aws-lc-sys along with every other C dependency, so that
+# specific trigger is gone - no dependency in the graph compiles C any more,
+# and nothing reaches for a glibc symbol the way aws-lc-sys did. The rule
+# itself still stands, because it was never really about aws-lc-sys: the Rust
+# std binary links the builder's glibc regardless. If you bump this, bump the
+# runtime base in lockstep and actually RUN the resulting image.
 #
 # Pinned by digest (GH #48) - "rust:1" is a floating tag that gets
 # repointed on every new 1.x release, which lets replicas built on
@@ -16,25 +20,16 @@
 # `docker pull rust:1 && docker inspect rust:1 --format='{{index .RepoDigests 0}}'`.
 FROM rust@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 as builder
 
-# nasm is required by mozjpeg-sys (#63 stage 2) to build libjpeg-turbo's
-# x86_64 SIMD paths. It is NOT needed on aarch64, which uses its own NEON
-# path — but CI builds linux/amd64 as well as arm64, so it must be present
-# unconditionally. Without it the amd64 build either fails or silently falls
-# back to scalar C, which would quietly give up most of the 2.2x scaled-decode
-# win this dependency was added for.
+# No apt layer (C-dependency removal). This image used to install nasm, cmake, meson and
+# ninja-build to compile the vendored C sources of mozjpeg-sys (libjpeg-turbo),
+# libavif-sys (libavif + AOM) and libdav1d-sys (dav1d). Every one of those
+# dependencies has been replaced by a pure-Rust crate, so the build needs no
+# C toolchain, no assembler and no meta build system - only rustc.
 #
-# cmake and meson/ninja-build (#67/#68) are required to build libavif-sys's
-# vendored libavif+AOM (both via cmake, `libavif-sys`/`libaom-sys`'s own
-# build.rs) and dav1d (via meson/ninja, `libdav1d-sys`'s build.rs) from
-# source. pkg-config/perl/python3 (meson's own runtime dependency) are
-# already present in this base image - verified with
-# `docker run --rm <this image> which pkg-config perl python3`, not
-# assumed - so only the three build-system binaries themselves are added.
-# DL3008 (pin apt versions) is ignored repo-wide in .hadolint.yaml.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends nasm cmake meson ninja-build \
-  && rm -rf /var/lib/apt/lists/*
-
+# Before adding anything back here, check whether the dependency that wants it
+# is pulling in C. `cargo tree -e build | grep -E '^(cc|cmake|nasm)'` resolves
+# empty today and the CI `no-native-deps` job fails the build if that stops
+# being true - an apt line here would be the symptom, not the fix.
 ENV APP_NAME=emgr
 
 WORKDIR /app

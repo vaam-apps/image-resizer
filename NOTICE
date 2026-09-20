@@ -9,12 +9,26 @@ Third-party notices
 
 This software is based in part on the work of the Independent JPEG Group.
 
-emgr links mozjpeg (via mozjpeg-sys), which vendors libjpeg-turbo and
-Independent JPEG Group code, distributed under the IJG, Zlib and
-BSD-3-Clause licences. It is used for DCT-scaled JPEG decoding.
+emgr has no C or C++ dependencies. Every image codec it uses is implemented
+in Rust and statically linked into the binary:
 
-emgr also links libwebp (via the `webp` crate, BSD-3-Clause) for lossy WebP
-encoding.
+  JPEG   jpeg-encoder, jpeg-decoder      (MIT OR Apache-2.0) AND IJG
+  PNG    png, via the image crate        MIT OR Apache-2.0
+  GIF    gif, via the image crate        MIT OR Apache-2.0
+  WebP   vaam-image-webp, a fork of      MIT OR Apache-2.0
+         image-rs/image-webp
+  AVIF   ravif + rav1e (encode)          BSD-2-Clause
+         avif-decode + rav1d (decode)    BSD-2-Clause
+
+The Independent JPEG Group notice above is REQUIRED and must not be removed
+while jpeg-encoder is a dependency. It is easy to assume otherwise: the
+notice was originally here for mozjpeg/mozjpeg-sys, which vendored IJG C
+code, and the C-dependency removal replaced mozjpeg with pure Rust. But `jpeg-encoder` is itself
+licensed "(MIT OR Apache-2.0) AND IJG" - its default quantisation and Huffman
+tables derive from the IJG reference implementation, so reimplementing the
+codec in Rust did not shed the licence. See the IJG entry in deny.toml.
+
+rav1d is a Rust port of dav1d and carries dav1d's BSD-2-Clause licence.
 
 Full licence texts ship with those crates and are reproduced in the
 dependency tree under ~/.cargo/registry.
