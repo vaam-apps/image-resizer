@@ -9,6 +9,50 @@ use aws_sdk_s3::primitives::{ByteStream, DateTime, DateTimeFormat};
 
 use crate::services::storage::core::StorageBackend;
 
+/// Builds the HTTP/TLS connector `MinIOStorage::new_minio` hands to the S3
+/// SDK (C-dependency removal).
+///
+/// `aws-sdk-s3`'s own "default-https-client" Cargo feature has been dropped
+/// (see the dependency comment in Cargo.toml) precisely because its only
+/// choices - `aws-smithy-http-client`'s `rustls-ring`, `rustls-aws-lc` and
+/// `rustls-aws-lc-fips` features - are all C-and-assembly crypto backends,
+/// the exact thing this crate is removing everywhere else. With that
+/// feature gone, aws-sdk-s3 builds no HTTP client implicitly at all, so
+/// skipping this function is not an option: `new_minio` would fail at
+/// runtime with no way to make a request, not just lose TLS.
+///
+/// `aws_smithy_http_client::tls::rustls_provider::CryptoMode::Custom` is
+/// smithy-rs's escape hatch for supplying a caller-built `CryptoProvider`
+/// instead of picking one of its built-in modes; it only exists at all
+/// behind the `aws_sdk_unstable` `--cfg` flag set in `.cargo/config.toml`
+/// (upstream's signal that the shape of this API may change between
+/// releases - accepted here because it is the only way to route the S3 SDK
+/// through a pure-Rust crypto provider).
+///
+/// Reads back `rustls::crypto::CryptoProvider::get_default()` - the exact
+/// Graviola instance `main::install_crypto_provider()` installs process-wide
+/// at startup - rather than calling `rustls_graviola::default_provider()`
+/// again here. Both would be behaviourally identical (it is a pure
+/// constructor over `'static` data), but reusing the installed default
+/// keeps this connector provably "whatever provider the process is running
+/// on" instead of a second, independently-constructed instance that happens
+/// to currently match.
+fn build_https_client() -> s3::config::SharedHttpClient {
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .expect(
+            "rustls default crypto provider must already be installed by \
+             main::install_crypto_provider() before any S3 client is built",
+        )
+        .as_ref()
+        .clone();
+
+    aws_smithy_http_client::Builder::new()
+        .tls_provider(aws_smithy_http_client::tls::Provider::rustls(
+            aws_smithy_http_client::tls::rustls_provider::CryptoMode::Custom(provider),
+        ))
+        .build_https()
+}
+
 /// MinIO storage implementation
 pub struct MinIOStorage {
     client: s3::Client,
@@ -32,6 +76,7 @@ impl MinIOStorage {
             ))
             .region(s3::config::Region::new(region))
             .force_path_style(true) // Crucial for MinIO compatibility
+            .http_client(build_https_client()) // (C-dependency removal) see that fn's doc comment
             .build();
 
         let s3_client = s3::Client::from_conf(s3_config);
@@ -192,6 +237,25 @@ impl StorageBackend for MinIOStorage {
 mod tests {
     use super::*;
 
+    /// `cargo test` never runs `main()`, so `main::install_crypto_provider()`
+    /// never executes for this test binary (C-dependency removal) - but `new_minio` now
+    /// calls `build_https_client()`, which panics via `.expect()` if no
+    /// rustls default crypto provider is installed. `s3_handler.rs` is
+    /// compiled into both the `emgr` bin (via `main.rs`'s local module
+    /// tree) and the `emgr` lib (via `lib.rs`'s `pub mod services`) as two
+    /// separate crate instances of the same source file, so this test
+    /// cannot reach `main.rs`'s own test-only installer - it needs its own.
+    /// `Once`, not a bare call, for the same reason as `main.rs`'s
+    /// equivalent: `install_default` succeeds at most once per process, and
+    /// `cargo test` runs tests in parallel by default.
+    fn ensure_crypto_provider_for_tests() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls_graviola::default_provider().install_default();
+        });
+    }
+
     /// `new_minio` only builds an `aws_sdk_s3::Client` from a static config
     /// (`s3::config::Builder`) - the AWS SDK is lazy, so this never makes a
     /// network call. Confirms construction succeeds with typical inputs
@@ -199,6 +263,7 @@ mod tests {
     /// smoke test).
     #[test]
     fn new_minio_succeeds_with_typical_inputs_and_makes_no_network_call() {
+        ensure_crypto_provider_for_tests();
         let result = MinIOStorage::new_minio(
             "http://127.0.0.1:9999".to_string(),
             "test-access-key".to_string(),

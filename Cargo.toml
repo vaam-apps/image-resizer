@@ -165,15 +165,52 @@ num_cpus = "1.16" # CPU detection for optimal thread pool sizing
 bytes = "1.5" # Efficient byte handling
 futures = "0.3" # Stream processing utilities
 
-aws-config = { version = "1.6", optional = true, features = ["behavior-version-latest"] } # AWS SDK configuration (for MinIO)
-# default-features = false + explicit feature list (GH #56): aws-sdk-s3's own
-# `default` feature set pulls in BOTH TLS stacks at once - "rustls" (misleading
-# name; it actually means the *legacy* hyper-0.14/rustls-0.21/h2-0.3 connector,
-# vulnerable to RUSTSEC-2026-0258/0098/0099/0104) alongside "default-https-client"
-# (the modern hyper-1/rustls-0.23/h2-0.4 connector that is actually used at
-# runtime under BehaviorVersion::latest()). Dropping "rustls" removes the legacy
-# stack from the dependency graph entirely instead of merely leaving it unused.
-aws-sdk-s3 = { version = "1.90", optional = true, default-features = false, features = ["behavior-version-latest", "default-https-client", "http-1x", "rt-tokio", "sigv4a"] } # AWS S3 client (MinIO compatible)
+# default-features = false (C-dependency removal): aws-config is unused directly in this
+# codebase (`s3_handler.rs` builds `s3::config::Builder` by hand with static
+# MinIO credentials, never `aws_config::load_from_env()` or similar) but is
+# kept as a dependency per its own doc comment below. Its `default` feature
+# set pulls in "default-https-client" -> `aws-smithy-runtime/default-https-client`
+# -> `aws-smithy-http-client/rustls-aws-lc` - i.e. `aws-lc-rs`/`aws-lc-sys`
+# (C + assembly) - even though nothing here ever calls into aws-config at
+# runtime. Turning defaults off removes that pull with no functional change.
+aws-config = { version = "1.6", optional = true, default-features = false, features = ["behavior-version-latest"] } # AWS SDK configuration (for MinIO)
+# default-features = false + explicit feature list (GH #56, extended by the C-dependency removal):
+# aws-sdk-s3's own `default` feature set pulls in BOTH TLS stacks at once -
+# "rustls" (misleading name; it actually means the *legacy*
+# hyper-0.14/rustls-0.21/h2-0.3 connector, vulnerable to
+# RUSTSEC-2026-0258/0098/0099/0104) alongside "default-https-client" (the
+# modern hyper-1/rustls-0.23/h2-0.4 connector that is actually used at
+# runtime under BehaviorVersion::latest()). Dropping "rustls" removes the
+# legacy stack from the dependency graph entirely instead of merely leaving
+# it unused.
+#
+# "default-https-client" is ALSO dropped now (C-dependency removal): it resolves to
+# `aws-smithy-runtime/default-https-client` -> `aws-smithy-http-client/
+# rustls-aws-lc`, hardwiring `aws-lc-rs`/`aws-lc-sys` as the S3 client's TLS
+# crypto backend with no way to swap it via Cargo features alone (the other
+# built-in choices, `rustls-ring`/`rustls-aws-lc-fips`, are also C+assembly).
+# Without this feature, aws-sdk-s3 has no default HTTP client at all - it
+# does not build one implicitly, so `s3_handler.rs` MUST supply one via
+# `.http_client(...)`, which it does: a hand-built `aws-smithy-http-client`
+# connector running rustls on the same pure-Rust Graviola provider
+# `main::install_crypto_provider()` installs process-wide. See that
+# function's doc comment, and `s3_handler.rs::build_https_client()`.
+aws-sdk-s3 = { version = "1.90", optional = true, default-features = false, features = ["behavior-version-latest", "http-1x", "rt-tokio", "sigv4a"] } # AWS S3 client (MinIO compatible)
+# Direct dependency (C-dependency removal), even though aws-sdk-s3/aws-config also depend on
+# it transitively: `s3_handler.rs` calls into this crate's own `Builder` API
+# directly to construct the custom-crypto-provider HTTP client described
+# above, so it needs to be named here rather than only reached incidentally.
+# `default-features = false` + `__rustls` only: `__rustls` (despite the
+# leading-underscore "internal" naming convention - Cargo does not actually
+# restrict activating it from a downstream Cargo.toml) is the one feature
+# that compiles this crate's rustls-based connector - `dep:rustls`,
+# `dep:hyper-rustls`, `dep:tokio-rustls`, `default-client` - WITHOUT also
+# pulling in a specific crypto backend the way `rustls-aws-lc`/`rustls-ring`/
+# `rustls-aws-lc-fips` each do (every one of those three additionally sets
+# `rustls?/aws_lc_rs`, `rustls?/ring`, or `rustls?/fips`, respectively - the
+# exact thing being avoided). See `.cargo/config.toml` for the companion
+# `--cfg aws_sdk_unstable` flag this also requires.
+aws-smithy-http-client = { version = "1.3", optional = true, default-features = false, features = ["__rustls"] }
 
 envconfig = { version = "0.11" }
 derive_builder = { version = "0.20" }
@@ -262,5 +299,9 @@ otel = [
     "tracing-opentelemetry",
     "prometheus"
 ]
-s3 = ["aws-sdk-s3", "aws-config"]
+# `aws-smithy-http-client` is a *direct* dependency here, not just a
+# transitive one: dropping aws-sdk-s3's `default-https-client` feature
+# means the SDK builds no HTTP client of its own, so `s3_handler.rs`
+# constructs one itself and needs this crate by name.
+s3 = ["aws-sdk-s3", "aws-config", "aws-smithy-http-client"]
 in_memory = []
