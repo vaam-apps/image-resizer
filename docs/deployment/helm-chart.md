@@ -3,10 +3,10 @@
 This repository ships **two** Helm charts, for two different deployment
 models:
 
-| Chart | Path | Workload kind | Use when |
-|---|---|---|---|
-| `emgr` | `helm/emgr/` | Standard Kubernetes `Deployment` (via the [bjw-s common library chart](https://bjw-s-labs.github.io/helm-charts/)) | You want a normal, always-on Deployment - fixed `replicaCount`, an optional HPA, a `PersistentVolumeClaim` for `local_fs` storage. |
-| `emgr-serverless` | `helm/serverless/` | [Knative](https://knative.dev/) `Service` (via the Bitnami common library chart) | You run Knative and want scale-to-zero, and S3/MinIO storage (no local disk needed). |
+| Chart             | Path               | Workload kind                                                                                                      | Use when                                                                                                                           |
+| ----------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `emgr`            | `helm/emgr/`       | Standard Kubernetes `Deployment` (via the [bjw-s common library chart](https://bjw-s-labs.github.io/helm-charts/)) | You want a normal, always-on Deployment - fixed `replicaCount`, an optional HPA, a `PersistentVolumeClaim` for `local_fs` storage. |
+| `emgr-serverless` | `helm/serverless/` | [Knative](https://knative.dev/) `Service` (via the Bitnami common library chart)                                   | You run Knative and want scale-to-zero, and S3/MinIO storage (no local disk needed).                                               |
 
 Both charts install `emgr` itself; pick one, not both, for a given
 deployment.
@@ -19,10 +19,10 @@ Row two (OCI, signed) is new: it publishes on the next `vX.Y.Z` release tag
 whose chart `version:` has moved, not retroactively for versions already
 on the classic repository.
 
-| | Reference | Signed | Source |
-|---|---|---|---|
-| Classic Helm repository | `https://vaam-apps.github.io/image-resizer/` | No | `.github/workflows/deploy-docs.yml`'s `deploy-helm` job (`helm/chart-releaser-action`), on every push to `main` where a chart's own `version:` moved. |
-| OCI registry | `oci://ghcr.io/vaam-apps/charts/emgr` and `oci://ghcr.io/vaam-apps/charts/emgr-serverless` | Yes (cosign, keyless) | `.github/workflows/release.yml`, on a `vX.Y.Z` release tag, again only when a chart's own `version:` moved since its last publish. |
+|                         | Reference                                                                                  | Signed                | Source                                                                                                                                                |
+| ----------------------- | ------------------------------------------------------------------------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Classic Helm repository | `https://vaam-apps.github.io/image-resizer/`                                               | No                    | `.github/workflows/deploy-docs.yml`'s `deploy-helm` job (`helm/chart-releaser-action`), on every push to `main` where a chart's own `version:` moved. |
+| OCI registry            | `oci://ghcr.io/vaam-apps/charts/emgr` and `oci://ghcr.io/vaam-apps/charts/emgr-serverless` | Yes (cosign, keyless) | `.github/workflows/release.yml`, on a `vX.Y.Z` release tag, again only when a chart's own `version:` moved since its last publish.                    |
 
 Both track each chart's hand-managed `version:` field (`Chart.yaml`), not
 the application's own release number (`appVersion:`) - see
@@ -93,11 +93,11 @@ layered on top:
 All three probes are plain Kubernetes HTTP probes against `/health` on
 port `3000` (`values.yaml`, `controllers.main.containers.app.probes`):
 
-| Probe | initialDelay | period | timeout | failureThreshold |
-|---|---|---|---|---|
-| liveness | 5s | 10s | 2s | 3 |
-| readiness | 5s | 10s | 2s | 3 |
-| startup | 0s | 5s | - | 30 (150s total before the container is killed for never finishing startup) |
+| Probe     | initialDelay | period | timeout | failureThreshold                                                           |
+| --------- | ------------ | ------ | ------- | -------------------------------------------------------------------------- |
+| liveness  | 5s           | 10s    | 2s      | 3                                                                          |
+| readiness | 5s           | 10s    | 2s      | 3                                                                          |
+| startup   | 0s           | 5s     | -       | 30 (150s total before the container is killed for never finishing startup) |
 
 ### What the chart configures out of the box
 
@@ -241,7 +241,8 @@ named `emgr-signing`, using the same `secretKeyRef` shape as
 env:
   SIGNING_KEY: { secretKeyRef: { name: emgr-signing, key: signing-key } }
   SIGNING_SALT: { secretKeyRef: { name: emgr-signing, key: signing-salt } }
-  METRICS_AUTH_TOKEN: { secretKeyRef: { name: emgr-signing, key: metrics-auth-token } }
+  METRICS_AUTH_TOKEN:
+    { secretKeyRef: { name: emgr-signing, key: metrics-auth-token } }
 ```
 
 Create that `Secret` yourself before installing (see the `kubectl create
@@ -300,6 +301,6 @@ helm uninstall emgr-serverless --namespace emgr
   from [Configuration](../getting-started/configuration.md) to whichever
   chart's env mechanism you're using.
 - `.github/workflows/ci.yml`'s `helm-verify` job runs `helm dependency
-  build`, `helm lint` and `helm template` for both charts on every PR (GH
+build`, `helm lint` and `helm template` for both charts on every PR (GH
   #84 / #85) - a rendering defect like the ones described above now fails
   a build instead of reaching a user.
