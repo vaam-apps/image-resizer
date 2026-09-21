@@ -21,12 +21,31 @@
 //!
 //! CSV on stdout; progress on stderr.
 use emgr::services::image::avif_codec;
+use ssimulacra2::{ColorPrimaries, Rgb, TransferCharacteristic};
 use emgr::services::image::handler::ImageService;
 use image::DynamicImage;
 use std::path::Path;
 use std::time::Instant;
 
+/// Which perceptual metric drives the quality bisection.
+///
+/// This matters more than it looks. Matching on DSSIM and matching on
+/// SSIMULACRA2 do NOT rank the formats the same way: scoring DSSIM-matched
+/// files with SSIMULACRA2 shows WebP landing 4.8 points below AVIF and JPEG at
+/// the loosest target, i.e. DSSIM calls files "equal quality" that SSIMULACRA2
+/// says are clearly worse. Any size comparison inherits that bias, so the
+/// metric is a parameter rather than a hardcoded choice.
+#[derive(Clone, Copy, PartialEq)]
+enum Metric {
+    Dssim,
+    Ssimulacra2,
+}
+
+/// DSSIM targets (lower is better) and their rough SSIMULACRA2 equivalents
+/// (higher is better), calibrated from the medians actually observed on this
+/// corpus so the two metrics bisect to comparable quality levels.
 const TARGETS: [f64; 3] = [0.0150, 0.0080, 0.0035];
+const TARGETS_S2: [f64; 3] = [26.5, 48.0, 66.3];
 /// Production default; see `DEFAULT_AVIF_SPEED`.
 const AVIF_SPEED: u8 = 6;
 /// Megapixel cap handed to `avif_codec::decode`, matching
@@ -41,6 +60,19 @@ const AVIF_SPEED: u8 = 6;
 /// "this argument is out of range". Verified by holding size and speed fixed
 /// and varying only the cap.
 const DECODE_MP_CAP: u64 = 50;
+
+fn to_s2_rgb(bytes: &[u8], w: usize, h: usize) -> Rgb {
+    let data: Vec<[f32; 3]> = bytes
+        .chunks_exact(3)
+        .map(|c| [f32::from(c[0]) / 255.0, f32::from(c[1]) / 255.0, f32::from(c[2]) / 255.0])
+        .collect();
+    Rgb::new(data, w, h, TransferCharacteristic::SRGB, ColorPrimaries::BT709).unwrap()
+}
+
+fn ssimulacra2_of(orig: &[u8], dec: &[u8], w: usize, h: usize) -> f64 {
+    ssimulacra2::compute_frame_ssimulacra2(to_s2_rgb(orig, w, h), to_s2_rgb(dec, w, h))
+        .expect("ssimulacra2")
+}
 
 fn dssim_of(orig: &[u8], dec: &[u8], w: usize, h: usize) -> f64 {
     let d = dssim_core::Dssim::new();

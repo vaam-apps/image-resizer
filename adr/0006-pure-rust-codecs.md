@@ -120,7 +120,7 @@ bisections:
 |---|---|---|---|
 | **JPEG** (default, non-progressive) | **0.995x** | **1.000x** | **1.000x** |
 | **JPEG progressive** (`jpgo:1:`) | **2.014x** | **1.658x** | **1.317x** |
-| **WebP** | 1.315x | 1.295x | 1.366x |
+| **WebP** | 1.208x | 1.174x | 1.200x |
 | **AVIF** | 1.158x | 1.101x | 1.040x |
 | PNG (control, lossless) | 1.000x | - | - |
 
@@ -140,7 +140,7 @@ builds. This is what should drive `.auto` negotiation.
 | Relative to that build's JPEG | <= 0.0150 | <= 0.0080 | <= 0.0035 |
 |---|---|---|---|
 | **Pure Rust** - AVIF | **0.567x** | **0.700x** | **0.787x** |
-| **Pure Rust** - WebP | **0.901x** | 1.053x | 1.210x |
+| **Pure Rust** - WebP | **0.798x** | **0.951x** | 1.072x |
 | **Pure Rust** - JPEG progressive | 1.382x | 1.278x | 1.177x |
 | C stack - AVIF | 0.496x | 0.656x | 0.781x |
 | C stack - WebP | 0.656x | 0.805x | 0.884x |
@@ -150,11 +150,12 @@ Two conclusions, both actionable:
 
 1. **AVIF still wins decisively** - 21-43% smaller than JPEG, barely changed from
    the C stack.
-2. **WebP is quality-dependent now.** Under libwebp it was 12-34% smaller than
-   JPEG at every level. After the encoder work (see below) it is 10% *smaller* at
-   low quality, roughly at parity in the middle (+5%), and 21% *larger* at high
-   quality. So it is worth serving to a client that takes WebP but not AVIF at
-   low and mid quality, and not worth it at high quality.
+2. **WebP is worth serving again, but read the number with the caveat below.**
+   After the encoder work it is 20% smaller than JPEG at low quality, 5% smaller
+   in the middle and 7% larger at high quality. **However**, DSSIM flatters it:
+   see "DSSIM is not a neutral referee" below. Adjusting for that, the low-quality
+   advantage is nearer ~15% than 20%. Still worth serving to a client that takes
+   WebP but not AVIF, below the top quality band.
 3. **Progressive JPEG is no longer the smaller option.** It used to be 13-34%
    smaller than baseline JPEG; it is now 18-38% larger, because mozjpeg's
    trellis was doing that work. Its remaining argument is progressive *rendering*,
@@ -209,6 +210,44 @@ by the encoder under test, and both encoders changed, so the two runs decode
 different bitstreams - that measures content, not decoder speed. The like-for-like
 table above is the real answer. Checking a fixed pre-encoded corpus into the repo
 would fix the benches themselves.
+
+## DSSIM is not a neutral referee
+
+Every size figure here comes from bisecting each encoder's quality scale to a
+**DSSIM** target. That is only sound if DSSIM ranks the formats the way another
+perceptual metric would. It does not.
+
+Re-scoring the DSSIM-matched files with **SSIMULACRA2** (higher is better;
+90 = visually lossless, 70 = good, 50 = fair), median over 24 images:
+
+| DSSIM target | AVIF | JPEG | WebP |
+|---|---|---|---|
+| 0.0150 | **26.83** | 26.43 | 24.63 (**-2.20**) |
+| 0.0080 | **48.43** | 47.09 | 46.25 (**-2.18**) |
+| 0.0035 | 66.30 | 66.33 | **66.49** |
+
+Files DSSIM calls equal quality are not equal: WebP lands ~2.2 points below AVIF
+at the two looser targets. So **WebP's size numbers are optimistic** - at genuinely
+matched perceptual quality it would need more bytes than the table above shows.
+Calibrating against this corpus's own rate/quality curve (roughly 1 SSIMULACRA2
+point per 3% of bytes around this range), the 0.798x figure is nearer 0.85x. That
+is an estimate from a local slope, not a measurement.
+
+Two things this does *not* undermine:
+
+- **AVIF's lead**, which holds on both metrics at every level and is the
+  load-bearing conclusion for negotiation.
+- **The WebP encoder improvements**, which compare the same encoder against
+  itself and are therefore unaffected by cross-format metric bias. SSIMULACRA2
+  independently confirms them: adaptive quantisation improved it by +1.1 to +1.8
+  points at fixed quality *while also shrinking files*.
+
+The gap was worse before that work (-4.82 at the loosest target) and has closed
+as the encoder improved, which is consistent with it being an artefact of a weak
+encoder rather than of the format.
+
+`examples/codec_report.rs` therefore carries a `Metric` switch rather than
+hardcoding DSSIM. Anyone re-running these numbers should report both.
 
 ## Are the replacements actually *correct*? (audited 2026-09-21)
 

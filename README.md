@@ -186,7 +186,7 @@ DSSIM-matched quality across all 24 Kodak photographs, relative to the C codecs:
 |---|---|---|---|
 | JPEG (default) | 0.995x | 1.000x | 1.000x |
 | JPEG progressive (`jpgo:1:`) | 2.014x | 1.658x | 1.317x |
-| WebP | 1.315x | 1.295x | 1.366x |
+| WebP | 1.208x | 1.174x | 1.200x |
 | AVIF | 1.158x | 1.101x | 1.040x |
 
 Default JPEG is at **parity** — production used mozjpeg's `JCP_FASTEST` profile, which has
@@ -198,11 +198,13 @@ opt-in progressive path.
 | | low quality | mid | high quality |
 |---|---|---|---|
 | AVIF | **0.567x** | **0.700x** | **0.787x** |
-| WebP | 0.901x | 1.053x | 1.210x |
+| WebP | 0.798x | 0.951x | 1.072x |
 | JPEG progressive | 1.382x | 1.278x | 1.177x |
 
-AVIF wins decisively at every level. WebP is worth serving to clients that accept it but
-not AVIF at low and mid quality, and not at high quality. Progressive JPEG is no longer a
+AVIF wins decisively at every level, on both DSSIM and SSIMULACRA2. WebP is worth serving
+to clients that accept it but not AVIF below the top quality band — though DSSIM flatters
+WebP by ~2.2 SSIMULACRA2 points there, so treat its advantage as nearer 15% than 20%
+([ADR 0006](adr/0006-pure-rust-codecs.md) has the detail). Progressive JPEG is no longer a
 size win at all — mozjpeg's trellis was doing that work — so its remaining argument is
 progressive *rendering*.
 
