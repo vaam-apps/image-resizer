@@ -120,7 +120,7 @@ bisections:
 |---|---|---|---|
 | **JPEG** (default, non-progressive) | **0.995x** | **1.000x** | **1.000x** |
 | **JPEG progressive** (`jpgo:1:`) | **2.014x** | **1.658x** | **1.317x** |
-| **WebP** | 1.878x | 1.970x | 2.247x |
+| **WebP** | 1.315x | 1.295x | 1.366x |
 | **AVIF** | 1.158x | 1.101x | 1.040x |
 | PNG (control, lossless) | 1.000x | - | - |
 
@@ -140,7 +140,7 @@ builds. This is what should drive `.auto` negotiation.
 | Relative to that build's JPEG | <= 0.0150 | <= 0.0080 | <= 0.0035 |
 |---|---|---|---|
 | **Pure Rust** - AVIF | **0.567x** | **0.700x** | **0.787x** |
-| **Pure Rust** - WebP | 1.145x | 1.465x | 1.978x |
+| **Pure Rust** - WebP | **0.901x** | 1.053x | 1.210x |
 | **Pure Rust** - JPEG progressive | 1.382x | 1.278x | 1.177x |
 | C stack - AVIF | 0.496x | 0.656x | 0.781x |
 | C stack - WebP | 0.656x | 0.805x | 0.884x |
@@ -150,10 +150,15 @@ Two conclusions, both actionable:
 
 1. **AVIF still wins decisively** - 21-43% smaller than JPEG, barely changed from
    the C stack.
-2. **WebP has inverted.** Under libwebp it was 12-34% *smaller* than JPEG; it is
-   now 15-98% *larger*. Preferring WebP over JPEG is now actively harmful, and
-   negotiation should reflect that until the encoder improves. The same is true of
-   progressive JPEG, which used to be the smaller option and no longer is.
+2. **WebP is quality-dependent now.** Under libwebp it was 12-34% smaller than
+   JPEG at every level. After the encoder work (see below) it is 10% *smaller* at
+   low quality, roughly at parity in the middle (+5%), and 21% *larger* at high
+   quality. So it is worth serving to a client that takes WebP but not AVIF at
+   low and mid quality, and not worth it at high quality.
+3. **Progressive JPEG is no longer the smaller option.** It used to be 13-34%
+   smaller than baseline JPEG; it is now 18-38% larger, because mozjpeg's
+   trellis was doing that work. Its remaining argument is progressive *rendering*,
+   not size.
 
 ### Decode, like for like (n=24 images x 3 targets, same bytes into both builds)
 
@@ -262,7 +267,7 @@ rather than inferred:
 | Gap | Evidence | Status |
 |---|---|---|
 | Loop filter never applied | `loop_filter::` appears only in the decoder | **fixed**: level was 63, now 0, mean -4.0% |
-| B_PRED (4x4 intra) | `LumaMode::B => unreachable!()` in the encoder | not implemented |
+| B_PRED (4x4 intra) | `LumaMode::B => unreachable!()` in the encoder | **fixed**: -30% bytes |
 | Adaptive quantisation | `segments_enabled: false`, and `todo!()` if set | not implemented |
 | Token probability adaptation | "currently just not updating these" | not implemented |
 | Trellis / token optimisation | absent | not implemented |
@@ -275,8 +280,32 @@ rather than a quality trade. Fixing it properly (filter the reconstruction, then
 derive the level from the quantiser) should beat 0, since the filter exists to
 help prediction.
 
-B_PRED is likely the largest remaining item: libwebp leans on it heavily for
-detailed blocks, and this encoder cannot emit it at all.
+### What the encoder work actually bought
+
+Measured identically at each step, median size against libwebp on Kodak:
+
+| Step | <= 0.0150 | <= 0.0080 | <= 0.0035 |
+|---|---|---|---|
+| As found | 2.148x | 2.185x | 2.287x |
+| + RD 16x16 mode decision | 1.893x | 1.924x | 2.191x |
+| + loop-filter fix | 1.857x | 1.924x | 2.191x |
+| **+ B_PRED** | **1.306x** | **1.285x** | **1.363x** |
+
+(the final row is n=24; the intermediate rows are the n=6 working set)
+
+Roughly 40% fewer bytes than the encoder started with. B_PRED alone accounts for
+most of it, which is unsurprising - the whole B_PRED encode path already existed
+and only the search was missing, so every macroblock in every image was using
+whole-macroblock prediction.
+
+**The cost is encode time: WebP went from ~1.5x libwebp to 3.4x-4.0x**, since
+the search evaluates 10 modes for each of 16 sub-blocks per macroblock. For a
+service that caches results this is a good trade - encode time is paid once per
+image, output size on every delivery - but it is a real regression for a
+cache-miss-heavy deployment.
+
+The remaining gap to libwebp is adaptive quantisation, token probability
+adaptation and trellis, in roughly that order of expected value.
 
 ## A correctness bug found on the way
 

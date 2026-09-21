@@ -169,7 +169,7 @@ Micro-benchmarks (single-operation, criterion, darwin/arm64, synthetic fixture �
 | JPEG encode (baseline) | 2.75 ms (`jpeg-encoder`; was 0.93 ms via `mozjpeg` — **2.97x slower**) |
 | JPEG encode (progressive) | 2.79 ms (`jpeg-encoder`; was 17.49 ms via `mozjpeg`'s `JCP_MAX_COMPRESSION` — **6.3x faster, but doing less work**, see ADR 0006) |
 | PNG encode (production path: `CompressionType::Best`) | 98.93 ms |
-| WebP encode | 25.19 ms (`vaam-image-webp`; was 23.66 ms via libwebp — 1.06x slower here, 1.43x on the photo fixture) |
+| WebP encode | 3.4x–4.0x libwebp at matched quality — the price of B_PRED search, which cut output size ~30% |
 | WebP decode, 1920x1080 | 45.51 ms — **not comparable to the old 32.82 ms**: this bench decodes fixtures made by the encoder under test, and that encoder changed. See ADR 0006. |
 | AVIF encode (`DEFAULT_AVIF_SPEED = 6`) | 92.87 ms (`ravif`/`rav1e`, no assembly; was 65.18 ms via `libavif`/AOM — **1.42x slower**) |
 | AVIF decode, 1920x1080 | 17.81 ms — **not comparable to the old 54.35 ms**: fixtures moved from AOM 4:2:0 to ravif 4:4:4, so the two runs decode different bitstreams. See ADR 0006. |
@@ -186,16 +186,25 @@ DSSIM-matched quality across all 24 Kodak photographs, relative to the C codecs:
 |---|---|---|---|
 | JPEG (default) | 0.995x | 1.000x | 1.000x |
 | JPEG progressive (`jpgo:1:`) | 2.014x | 1.658x | 1.317x |
-| WebP | 1.878x | 1.970x | 2.247x |
+| WebP | 1.315x | 1.295x | 1.366x |
 | AVIF | 1.158x | 1.101x | 1.040x |
 
 Default JPEG is at **parity** — production used mozjpeg's `JCP_FASTEST` profile, which has
 no trellis quantisation, so there was none to lose. The trellis cost lands only on the
 opt-in progressive path.
 
-**What to serve has changed.** Within the pure-Rust stack, AVIF is **0.567x–0.787x** the
-size of JPEG, while WebP is now **1.145x–1.978x** — i.e. *larger* than JPEG, where under
-libwebp it was smaller. Preferring WebP over JPEG now costs bytes on every request.
+**What to serve.** Within the pure-Rust stack, relative to JPEG at matched quality:
+
+| | low quality | mid | high quality |
+|---|---|---|---|
+| AVIF | **0.567x** | **0.700x** | **0.787x** |
+| WebP | 0.901x | 1.053x | 1.210x |
+| JPEG progressive | 1.382x | 1.278x | 1.177x |
+
+AVIF wins decisively at every level. WebP is worth serving to clients that accept it but
+not AVIF at low and mid quality, and not at high quality. Progressive JPEG is no longer a
+size win at all — mozjpeg's trellis was doing that work — so its remaining argument is
+progressive *rendering*.
 
 Full method, the like-for-like decode comparison, and the accepted regressions are in
 [ADR 0006](adr/0006-pure-rust-codecs.md). Reproduce with
