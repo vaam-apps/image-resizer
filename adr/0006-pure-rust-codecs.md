@@ -71,16 +71,16 @@ reverses sign.
 
 | Benchmark | C build | Pure Rust | Ratio |
 |---|---|---|---|
-| `encode/jpeg_baseline/photo` | 0.92 ms | 2.76 ms | **3.00x slower** |
-| `encode/jpeg_444/photo` | 1.28 ms | 2.65 ms | **2.07x slower** |
-| `encode/jpeg_progressive/photo` | 24.76 ms | 2.80 ms | **0.11x — 9x faster** |
-| `encode/jpeg_444_progressive/photo` | 33.57 ms | 2.74 ms | **0.08x — 12x faster** |
+| `encode/jpeg_baseline/photo` | 0.92 ms | 2.83 ms | **3.09x slower** |
+| `encode/jpeg_444/photo` | 1.28 ms | 2.69 ms | **2.09x slower** |
+| `encode/jpeg_progressive/photo` | 24.76 ms | 2.84 ms | **0.11x** |
+| `encode/jpeg_444_progressive/photo` | 33.57 ms | 2.77 ms | **0.08x** |
 | `decode/jpeg/photo_1920x1080` | 4.71 ms | 10.90 ms | **2.32x slower** |
 | `decode/jpeg/photo_640x360` | 0.60 ms | 1.48 ms | **2.45x slower** |
-| `encode/avif/photo` | 62.69 ms | 89.22 ms | **1.42x slower** |
-| `encode/webp/photo` | 20.30 ms | 29.06 ms | **1.43x slower** |
-| `encode/png_best/photo` (control) | 64.53 ms | 64.96 ms | 1.01x |
-| `encode/png_default/photo` (control) | 1.36 ms | 1.25 ms | 0.92x |
+| `encode/avif/photo` | 62.69 ms | 93.61 ms | **1.49x slower** |
+| `encode/webp/photo` | 20.30 ms | 107.40 ms | **5.29x slower** |
+| `encode/png_best/photo` (control) | 64.53 ms | 65.67 ms | 1.02x |
+| `encode/png_default/photo` (control) | 1.36 ms | 1.26 ms | 0.93x |
 
 ### End-to-end pipeline (the number that actually matters)
 
@@ -89,18 +89,23 @@ encode.
 
 | Pipeline | C build | Pure Rust | Ratio |
 |---|---|---|---|
-| `photo_like_thumbnail_jpg` | 6.04 ms | 9.65 ms | **1.60x slower** |
-| `photo_4k_large_downscale_thumbnail_jpg` | 19.19 ms | 33.87 ms | **1.76x slower** |
-| `photo_real_thumbnail_jpg` | 3.59 ms | 6.10 ms | **1.70x slower** |
-| `photo_real_large_large_downscale_thumbnail_jpg` | 3.35 ms | 6.39 ms | **1.91x slower** |
-| `photo_with_exif_strip_metadata_default` | 6.05 ms | 9.67 ms | **1.60x slower** |
-| `alpha_resize_webp` | 5.20 ms | 6.28 ms | 1.21x slower |
-| `flat_resize_png` (control) | 8.45 ms | 8.23 ms | 0.97x |
+| `photo_like_thumbnail_jpg` | 6.06 ms | 8.32 ms | **1.37x slower** |
+| `photo_4k_large_downscale_thumbnail_jpg` | 19.14 ms | 28.93 ms | **1.51x slower** |
+| `photo_real_thumbnail_jpg` | 3.64 ms | 5.55 ms | **1.53x slower** |
+| `photo_real_large_large_downscale_thumbnail_jpg` | 3.39 ms | 5.71 ms | **1.69x slower** |
+| `photo_with_exif_strip_metadata_default` | 6.07 ms | 8.40 ms | **1.38x slower** |
+| `alpha_resize_webp` | 5.30 ms | 19.80 ms | **3.73x slower** |
+| `flat_resize_png` (control) | 8.59 ms | 8.19 ms | 0.95x |
 
-**A JPEG request now costs roughly 1.6–1.9x what it did.** The PNG control at 0.97x on the
-same run confirms that is a real codec effect and not environment drift. Given that
-rivalling imgproxy on cold-cache latency is this project's stated goal, this is the
-regression to weigh against the dependency win — it is not a rounding error.
+**A JPEG request costs roughly 1.4–1.7x what it did; a WebP one costs 3.7x.** The PNG
+control at 0.95x confirms these are real codec effects rather than environment drift.
+Given that rivalling imgproxy on cold-cache latency is this project's stated goal, this is
+the regression to weigh against the dependency win — it is not a rounding error.
+
+An earlier revision of this table reported 1.6–1.9x for the JPEG pipelines. That run had
+the baseline and the after measurement executing **concurrently**, so both contended for
+CPU; re-running each alone gives the figures above. The tell was that the JPEG ratios moved
+while nothing in the JPEG path had changed. Benchmark runs here must not overlap.
 
 ### Size, DSSIM-matched (Kodak, n=24, median; >1.00 is bigger)
 
@@ -185,22 +190,26 @@ wider - but a catastrophic x86_64 regression now looks much less likely.
 
 | Format | C | Pure Rust | Ratio |
 |---|---|---|---|
-| JPEG | 0.95-1.08 ms | 2.88-3.07 ms | **~3.0x slower** |
-| JPEG progressive | 16.05-26.72 ms | 2.93-3.15 ms | **0.12-0.18x** |
-| WebP | 20.47-25.84 ms | 30.95-39.10 ms | **~1.5x slower** |
-| AVIF | 66.53-100.11 ms | 60.03-126.20 ms | **0.82x-1.28x** |
-| PNG (control) | 78.33 ms | 78.46 ms | 1.01x |
+| JPEG | 0.95-1.08 ms | 2.79-3.04 ms | **~2.9x slower** |
+| JPEG progressive | 16.05-26.72 ms | 2.82-3.05 ms | **0.11-0.18x** |
+| WebP | 20.47-25.84 ms | 112.52-128.25 ms | **5.0x-5.5x slower** |
+| AVIF | 66.53-100.11 ms | 59.76-124.61 ms | **0.81x-1.23x** |
+| PNG (control) | 78.33 ms | 76.06 ms | 1.00x |
 
 Two of these must be read with the size table, not quoted alone:
 
 - **Progressive JPEG is not 6x faster in any useful sense.** mozjpeg ran
   `JCP_MAX_COMPRESSION` with trellis; `jpeg-encoder` does far less work and ships
   a file up to 2x larger for it.
-- **AVIF encode is *faster* at low and mid quality** (0.82-0.85x), slower only at
-  the strictest target (1.28x). This contradicts the fixed-quality bench above
-  (1.42x slower) and both are correct: at a fixed nominal q80 ravif does more work
+- **AVIF encode is *faster* at low and mid quality** (0.81-0.83x), slower only at
+  the strictest target (1.23x). This contradicts the fixed-quality bench above
+  (1.49x slower) and both are correct: at a fixed nominal q80 ravif does more work
   than AOM at q80, while at matched perceptual quality it needs a lower setting
   and comes out ahead. The matched-quality figure describes production.
+- **WebP encode is now 5x**, up from ~1.5x before the encoder work. That is the
+  price of the B_PRED search plus two extra whole-frame passes (skip-probability
+  and token statistics), bought with ~46% fewer bytes. For a service that caches
+  results it is a good trade; for a cache-miss-heavy deployment it is not.
 
 ### Benchmarks that are NOT comparable, and must not be read as results
 
@@ -298,28 +307,19 @@ because nothing in the test suite was checking decoder fidelity at all and
 "faithful port" was being taken on trust - but it does not justify further work,
 and certainly not a hand-written upsampler.
 
-## What the WebP encoder is still missing
+## Rebuilding the WebP encoder
 
-The remaining ~1.9-2.2x is structural, and the gaps are visible in the source
-rather than inferred:
+The encoder was, as found, missing four of the five things libwebp does. Each gap
+was visible in the source rather than inferred, and each was fixed and measured
+separately:
 
-| Gap | Evidence | Status |
+| Gap | Evidence in the source | Outcome |
 |---|---|---|
-| Loop filter never applied | `loop_filter::` appears only in the decoder | **fixed**: level was 63, now 0, mean -4.0% |
-| B_PRED (4x4 intra) | `LumaMode::B => unreachable!()` in the encoder | **fixed**: -30% bytes |
-| Adaptive quantisation | `segments_enabled: false`, and `todo!()` if set | not implemented |
-| Token probability adaptation | "currently just not updating these" | not implemented |
-| Trellis / token optimisation | absent | not implemented |
-
-The loop-filter finding is worth generalising: `filter_level` was signalled at
-the maximum while the encoder never ran the filter, so it predicted from
-unfiltered pixels while the decoder predicted from filtered ones. A sweep across
-0/8/16/32/63 degrades monotonically - the signature of encoder/decoder drift
-rather than a quality trade. Fixing it properly (filter the reconstruction, then
-derive the level from the quantiser) should beat 0, since the filter exists to
-help prediction.
-
-### What the encoder work actually bought
+| Loop filter never applied | `loop_filter::` appears only in the decoder | **fixed** - level was 63, now 0: mean -4.0% |
+| B_PRED (4x4 intra) | `LumaMode::B => unreachable!()` | **fixed** - the largest single win, ~-30% |
+| Token probability adaptation | "currently just not updating these" | **fixed** - -2.9% / -5.5% / -4.7% |
+| Adaptive quantisation | `segments_enabled: false`, `todo!()` if set | **fixed** - smaller *and* better quality |
+| Trellis / token optimisation | absent | **implemented and reverted** - see below |
 
 Measured identically at each step, median size against libwebp on Kodak:
 
@@ -328,23 +328,49 @@ Measured identically at each step, median size against libwebp on Kodak:
 | As found | 2.148x | 2.185x | 2.287x |
 | + RD 16x16 mode decision | 1.893x | 1.924x | 2.191x |
 | + loop-filter fix | 1.857x | 1.924x | 2.191x |
-| **+ B_PRED** | **1.306x** | **1.285x** | **1.363x** |
+| + B_PRED | 1.306x | 1.285x | 1.363x |
+| + token probability adaptation | 1.256x | 1.244x | 1.307x |
+| **+ adaptive quantisation** | **1.208x** | **1.174x** | **1.200x** |
 
-(the final row is n=24; the intermediate rows are the n=6 working set)
+**Roughly 46% fewer bytes than the encoder started with**, and enough to move WebP
+from larger-than-JPEG at every level back to 0.798x / 0.951x / 1.072x of it.
 
-Roughly 40% fewer bytes than the encoder started with. B_PRED alone accounts for
-most of it, which is unsurprising - the whole B_PRED encode path already existed
-and only the search was missing, so every macroblock in every image was using
-whole-macroblock prediction.
+Three findings worth keeping:
 
-**The cost is encode time: WebP went from ~1.5x libwebp to 3.4x-4.0x**, since
-the search evaluates 10 modes for each of 16 sub-blocks per macroblock. For a
-service that caches results this is a good trade - encode time is paid once per
-image, output size on every delivery - but it is a real regression for a
-cache-miss-heavy deployment.
+- **The loop-filter bug generalises.** `filter_level` was signalled at the maximum
+  while the encoder never ran the filter, so it predicted from unfiltered pixels
+  while the decoder predicted from filtered ones. A sweep across 0/8/16/32/63
+  degrades monotonically, which is the signature of encoder/decoder drift rather
+  than a quality trade. Setting it to 0 is still a stopgap: filtering the
+  reconstruction and deriving the level from the quantiser should beat 0, because
+  the filter exists to help prediction.
+- **Adaptive quantisation improved both axes at once** - smaller files *and*
+  higher SSIMULACRA2, at no encode-time cost. That is unusual enough to note; the
+  classifier is one variance pass plus a sort, negligible beside the RD search.
+  It also surfaced a latent bug: `write_optional_signed_value` wrote its sign flag
+  backwards relative to the spec and to this crate's own decoder. It was dead code
+  because every caller passed `None`, and segmentation is the first that does not.
+- **Trellis was implemented and reverted.** On kodim01 at q55 it saved 8 bytes
+  (0.03%), scored slightly worse on both DSSIM and SSIMULACRA2, and cost 4.06x the
+  encode time. The decisive measurement is that the cost persists with its lambda
+  multiplier at zero, where the search is a no-op and reproduces the previous
+  output byte for byte - so the 4x is the DP machinery itself and no tuning makes
+  it cheaper. VP8's coefficient tokens are cheap and its blocks are 4x4, so there
+  is little rate to recover per block; this encoder's remaining loss is in
+  prediction and quantiser choice, not coefficient coding.
 
-The remaining gap to libwebp is adaptive quantisation, token probability
-adaptation and trellis, in roughly that order of expected value.
+**The cost is encode time: WebP went from ~1.5x libwebp to 5.0x-5.5x** at matched
+quality, from the B_PRED search plus two extra whole-frame passes (skip
+probability and token statistics). For a service that caches results this is a
+good trade - encode is paid once per image, size on every delivery - but it is a
+real regression for a cache-miss-heavy deployment, and it is what moves the
+`alpha_resize_webp` pipeline to 3.73x.
+
+What remains: the proper loop-filter fix above, and reducing the three-pass
+structure (skip-probability dry run, token-statistics dry run, real pass) which
+recomputes mode decision and reconstruction each time with no caching between.
+That is where the 5x lives, and it is an engineering problem rather than a codec
+one.
 
 ## A correctness bug found on the way
 
@@ -370,10 +396,14 @@ on q85.
 
 Accepted regressions, as finally measured:
 
-- **A JPEG request costs ~1.6-1.9x end to end** - about 3x on encode and ~2.4x on decode.
+- **A JPEG request costs ~1.4-1.7x end to end** - about 2.9x on encode and 2.4x on decode.
   This is the headline cost and the one to weigh against the dependency win.
-- **WebP output is ~1.9-2.2x larger**, which has inverted its usefulness: it is now bigger
-  than JPEG rather than smaller.
+- **A WebP request costs 3.7x end to end.** WebP encode is 5.0-5.5x at matched quality,
+  bought deliberately: the same work cut output size ~46%. Encode is paid once per cached
+  image, bytes on every delivery, so this is a good trade for a caching service and a poor
+  one without a cache.
+- **WebP output is 1.17-1.21x larger** than libwebp's, down from 1.88-2.25x before the
+  encoder work.
 - **Progressive JPEG output is 1.3-2.0x larger**, the one place mozjpeg's trellis actually
   applied.
 - **WebP decode is 2.9x slower**, the worst decode regression.

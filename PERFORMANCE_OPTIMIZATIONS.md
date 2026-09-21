@@ -186,8 +186,13 @@ bounds *queued*, not in-flight, waste.
     discarding most of the data during resize. This is the same mechanism
     mozjpeg provided; the win it measured (2.21x faster for a 4K source to a
     small thumbnail, 26.21ms vs 58.03ms for full decode + resize) was
-    specific to mozjpeg's DCT-scaled decode and has not been re-measured
-    against `jpeg-decoder`'s: **TODO(re-measure)**.
+    specific to mozjpeg's DCT-scaled decode. Re-measured against
+    `jpeg-decoder`'s `scale()` on a 2200x1100 photo: full-size 8.99 ms,
+    1/2 5.54 ms, 1/4 4.26 ms, 1/8 4.06 ms. So the win survives the swap but
+    flattens out - most of it is realised by 1/4, and 1/8 buys almost
+    nothing more, because the fixed per-image costs stop being the dominant
+    term. `scale()` also rounds up the same way libjpeg does (1100 at 1/8
+    reports 138, not 137), which is what the scaled-dimension test pins.
   - **Full-size decode**, otherwise. Under mozjpeg this path (extended by
     #67 to cover *every* JPEG, not just the DCT-scaled case, after `image`
     0.25.10's `zune-jpeg` 0.5.x made its Huffman bit-refill EOF check
@@ -208,13 +213,25 @@ bounds *queued*, not in-flight, waste.
   `set_quantization_tables`, and `add_app_segment` for the raw APP1/APP2
   markers EXIF and ICC are written through - so the `jpgo:` option surface
   is unchanged. What it does *not* implement is trellis quantisation, so
-  output is expected to be measurably larger than mozjpeg's at matched
-  quality; `ImageService::encode_jpeg` records the number, but it has not
-  been re-measured against this encoder: **TODO(re-measure)**.
+  output was *expected* to be measurably larger than mozjpeg's at matched
+  quality. Measured across all 24 Kodak photographs at matched DSSIM, it is
+  **at parity: 0.995x / 1.000x / 1.000x**.
+
+  The expectation was wrong for a specific and easily-repeated reason: it
+  compared against `mozjpeg::Compress` at its own defaults, which enable
+  trellis, while this service's non-progressive path set `JCP_FASTEST`,
+  under which `trellis_quant = (compress_profile == JCP_MAX_COMPRESSION)` is
+  false. There was no trellis on the default path to lose. The trellis cost
+  is real but lands only on the opt-in progressive path, where output is
+  1.32x-2.01x larger. See `adr/0006-pure-rust-codecs.md`.
 
   mozjpeg's two-profile split no longer applies - `jpeg-encoder` is one
-  encoder, not a fastest/max-compression pair - so the numbers that used to
-  describe it are void rather than dated: **TODO(re-measure)** (was:
+  encoder, not a fastest/max-compression pair. Concretely, progressive and
+  baseline now cost about the same (2.84 ms and 2.83 ms on the `photo`
+  fixture) where mozjpeg's progressive profile cost 24.76 ms against its
+  baseline 0.92 ms. That is not a free 9x: the progressive path is doing far
+  less work and ships a 1.32x-2.01x larger file for it. The old numbers
+  below are void rather than dated (was:
   mozjpeg's `JCP_FASTEST` default profile, used for non-progressive output,
   measured ~5% smaller and 3-4x faster than the pre-#76 `image`-crate
   encoder, with a better mean DSSIM than mozjpeg's own max-compression
