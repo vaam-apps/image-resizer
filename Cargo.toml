@@ -1,6 +1,6 @@
 [package]
 name = "emgr"
-version = "0.2.2" # x-release-please-version
+version = "0.2.3" # x-release-please-version
 edition = "2024"
 # A deployed service, never published to crates.io. Also lets cargo-deny's
 # `allow-wildcard-paths` apply, which it refuses to do for public crates.
