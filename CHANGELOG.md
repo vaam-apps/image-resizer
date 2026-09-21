@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/vaam-apps/image-resizer/compare/v0.2.2...v0.2.3) (2026-09-21)
+
+
+### Bug Fixes
+
+* **charts:** point both charts at the vaam-apps image package ([#122](https://github.com/vaam-apps/image-resizer/issues/122)) ([931cd91](https://github.com/vaam-apps/image-resizer/commit/931cd91a381924b5f41b8d8e12b357af26e823dd))
+
 ## [0.2.2](https://github.com/vaam-apps/image-resizer/compare/v0.2.1...v0.2.2) (2026-09-20)
 
 
