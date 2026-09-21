@@ -1344,7 +1344,7 @@ dependencies = [
  "mimalloc",
  "mozjpeg",
  "num_cpus",
- "opentelemetry 0.29.1",
+ "opentelemetry 0.32.0",
  "opentelemetry-otlp",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
@@ -2512,6 +2512,7 @@ dependencies = [
  "js-sys",
  "pin-project-lite",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
