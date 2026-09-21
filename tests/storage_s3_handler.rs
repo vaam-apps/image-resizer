@@ -169,6 +169,14 @@ async fn delete_object(
 /// Starts the fake S3 double on an OS-assigned loopback port and returns its
 /// base URL plus a handle that tears the server down when dropped/aborted.
 async fn spawn_fake_s3() -> (String, tokio::task::JoinHandle<()>) {
+    // Every test here builds a real `MinIOStorage`, whose `build_https_client`
+    // reads back the process-wide rustls provider and panics if none is
+    // installed. `main::install_crypto_provider` does that in the binary, but
+    // an integration test has no `main` - and unlike the unit tests, this crate
+    // links `emgr` compiled *without* `cfg(test)`, so a test-gated helper would
+    // not be visible here. Hence the public, idempotent installer.
+    emgr::modules::utils::crypto::ensure_crypto_provider_installed();
+
     let state = FakeS3State::default();
     // force_path_style(true) (set in `MinIOStorage::new_minio`) means
     // requests land as `/{bucket}/{key}`, not virtual-hosted-style - the

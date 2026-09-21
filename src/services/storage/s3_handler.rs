@@ -248,7 +248,7 @@ mod tests {
     /// `Once`, not a bare call, for the same reason as `main.rs`'s
     /// equivalent: `install_default` succeeds at most once per process, and
     /// `cargo test` runs tests in parallel by default.
-    fn ensure_crypto_provider_for_tests() {
+    fn ensure_crypto_provider_installed() {
         use std::sync::Once;
         static INIT: Once = Once::new();
         INIT.call_once(|| {
@@ -263,7 +263,7 @@ mod tests {
     /// smoke test).
     #[test]
     fn new_minio_succeeds_with_typical_inputs_and_makes_no_network_call() {
-        ensure_crypto_provider_for_tests();
+        ensure_crypto_provider_installed();
         let result = MinIOStorage::new_minio(
             "http://127.0.0.1:9999".to_string(),
             "test-access-key".to_string(),

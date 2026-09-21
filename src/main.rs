@@ -287,7 +287,7 @@ mod tests {
     /// back an `Err` it has no reason to treat as fatal - both callers want
     /// the same outcome (Graviola installed), so the second call's result
     /// is simply discarded rather than unwrapped.
-    fn ensure_crypto_provider_for_tests() {
+    fn ensure_crypto_provider_installed() {
         use std::sync::Once;
         static INIT: Once = Once::new();
         INIT.call_once(|| {
@@ -301,7 +301,7 @@ mod tests {
     /// hard-dropping.
     #[tokio::test]
     async fn graceful_shutdown_drains_in_flight_request_and_refuses_new_ones() {
-        ensure_crypto_provider_for_tests();
+        ensure_crypto_provider_installed();
         let started = Arc::new(AtomicUsize::new(0));
         let completed = Arc::new(AtomicUsize::new(0));
 
@@ -339,7 +339,7 @@ mod tests {
         ));
 
         // Kick off a slow in-flight request without awaiting its completion.
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
         let in_flight = {
             let client = client.clone();
             let url = format!("http://{addr}/slow");
@@ -409,7 +409,7 @@ mod tests {
     /// telemetry) rather than hang forever.
     #[tokio::test]
     async fn graceful_shutdown_returns_even_if_drain_deadline_is_exceeded() {
-        ensure_crypto_provider_for_tests();
+        ensure_crypto_provider_installed();
         let app = Router::new().route(
             "/forever",
             get(|| async {
@@ -433,7 +433,7 @@ mod tests {
             shutdown_signal,
         ));
 
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
         let _in_flight = tokio::spawn({
             let url = format!("http://{addr}/forever");
             async move { client.get(url).send().await }

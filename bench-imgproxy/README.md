@@ -51,15 +51,15 @@ ENGINES="imgproxy emgr emgr_s3" SCENARIOS="cold warm" \
 
 ## What's in this directory
 
-| Path | What it is |
-|---|---|
-| `compose.yaml` | The stack: `origin` (nginx, serves the fixture corpus), `emgr` (local_fs backend, built from the repo's own `Dockerfile`, `fs_deploy` target), `emgr_s3` (S3/MinIO backend, same `Dockerfile`, `s3_deploy` target), `minio` + `minio_init` (S3-compatible object store `emgr_s3` writes to, plus a one-shot bucket-creation/public-ACL container), `imgproxy` (pinned `darthsim/imgproxy:v4.0.13`), `driver` (pinned `grafana/k6:2.2.0`, run on demand) |
-| `origin/nginx.conf` | Static file server for the corpus, gzip off, no caching headers, ignores query strings |
-| `fixtures/generate.py` | Deterministic fixture corpus generator (see below) |
-| `fixtures/corpus/` | The generated images nginx serves |
-| `driver/k6-script.js` | The load test script: URL builders per engine, scenario logic, metrics |
-| `driver/run.sh` | Orchestrates bring-up, healthchecks, and the scenario sweep |
-| `results/` | JSON reports + full k6 logs land here, one file per (engine, scenario, concurrency) |
+| Path                   | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compose.yaml`         | The stack: `origin` (nginx, serves the fixture corpus), `emgr` (local_fs backend, built from the repo's own `Dockerfile`, `fs_deploy` target), `emgr_s3` (S3/MinIO backend, same `Dockerfile`, `s3_deploy` target), `minio` + `minio_init` (S3-compatible object store `emgr_s3` writes to, plus a one-shot bucket-creation/public-ACL container), `imgproxy` (pinned `darthsim/imgproxy:v4.0.13`), `driver` (pinned `grafana/k6:2.2.0`, run on demand) |
+| `origin/nginx.conf`    | Static file server for the corpus, gzip off, no caching headers, ignores query strings                                                                                                                                                                                                                                                                                                                                                                  |
+| `fixtures/generate.py` | Deterministic fixture corpus generator (see below)                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `fixtures/corpus/`     | The generated images nginx serves                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `driver/k6-script.js`  | The load test script: URL builders per engine, scenario logic, metrics                                                                                                                                                                                                                                                                                                                                                                                  |
+| `driver/run.sh`        | Orchestrates bring-up, healthchecks, and the scenario sweep                                                                                                                                                                                                                                                                                                                                                                                             |
+| `results/`             | JSON reports + full k6 logs land here, one file per (engine, scenario, concurrency)                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## The fixture corpus: generated, not downloaded
 
@@ -80,15 +80,15 @@ time, so that:
 
 Corpus contents:
 
-| File | Dimensions | Content |
-|---|---|---|
-| `photo_4k.jpg` | 3840x2160 | Gradient + per-pixel noise ("photo-like"), JPEG q90 |
-| `photo_1080p.jpg` | 1920x1080 | Same generator, JPEG q90 |
-| `photo_800x600.jpg` | 800x600 | Same generator, JPEG q90 |
-| `photo_1080p.webp` | 1920x1080 | Same pixel content as `photo_1080p.jpg`, re-encoded WebP q90 -- exercises WebP source decode (#66; via `vaam-image-webp` as of #134, previously real libwebp via FFI), previously untested by this harness |
-| `photo_1080p.avif` | 1920x1080 | Same pixel content again, AVIF q85 -- exercises AVIF source decode (#67; via `avif-decode`/`rav1d` as of #134, previously `libavif`/dav1d), previously untested by this harness |
-| `alpha_1024.png` | 1024x1024 | RGBA with a fully-transparent border whose RGB channels are garbage -- exercises alpha-flattening on PNG->JPEG/WebP conversion |
-| `flat_1024.png` | 1024x1024 | Single solid colour, compresses to ~4.5KB |
+| File                | Dimensions | Content                                                                                                                                                                                                    |
+| ------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `photo_4k.jpg`      | 3840x2160  | Gradient + per-pixel noise ("photo-like"), JPEG q90                                                                                                                                                        |
+| `photo_1080p.jpg`   | 1920x1080  | Same generator, JPEG q90                                                                                                                                                                                   |
+| `photo_800x600.jpg` | 800x600    | Same generator, JPEG q90                                                                                                                                                                                   |
+| `photo_1080p.webp`  | 1920x1080  | Same pixel content as `photo_1080p.jpg`, re-encoded WebP q90 -- exercises WebP source decode (#66; via `vaam-image-webp` as of #134, previously real libwebp via FFI), previously untested by this harness |
+| `photo_1080p.avif`  | 1920x1080  | Same pixel content again, AVIF q85 -- exercises AVIF source decode (#67; via `avif-decode`/`rav1d` as of #134, previously `libavif`/dav1d), previously untested by this harness                            |
+| `alpha_1024.png`    | 1024x1024  | RGBA with a fully-transparent border whose RGB channels are garbage -- exercises alpha-flattening on PNG->JPEG/WebP conversion                                                                             |
+| `flat_1024.png`     | 1024x1024  | Single solid colour, compresses to ~4.5KB                                                                                                                                                                  |
 
 Regenerating produces byte-identical files (no wall-clock or hostname
 inputs) -- the corpus doesn't strictly need to be committed to get a
@@ -310,13 +310,13 @@ Each `results/*.json` report (`driver/k6-script.js`'s `handleSummary`)
 exports two views of latency and throughput, and they are **not**
 interchangeable:
 
-| Metric | What it measures | Comparable across engines? |
-|---|---|---|
-| `http_req_duration` | latency of a single HTTP request | **No** |
-| `throughput_rps` (from `http_reqs.rate`) | HTTP requests/sec | **No** |
-| `iteration_duration` | wall-clock for one complete delivered image, redirect hops included | **Yes** |
-| `images_per_second` (from `iterations.rate`) | delivered images/sec | **Yes** |
-| `http_reqs_per_iteration` | HTTP requests issued per delivered image | the tell, see below |
+| Metric                                       | What it measures                                                    | Comparable across engines? |
+| -------------------------------------------- | ------------------------------------------------------------------- | -------------------------- |
+| `http_req_duration`                          | latency of a single HTTP request                                    | **No**                     |
+| `throughput_rps` (from `http_reqs.rate`)     | HTTP requests/sec                                                   | **No**                     |
+| `iteration_duration`                         | wall-clock for one complete delivered image, redirect hops included | **Yes**                    |
+| `images_per_second` (from `iterations.rate`) | delivered images/sec                                                | **Yes**                    |
+| `http_reqs_per_iteration`                    | HTTP requests issued per delivered image                            | the tell, see below        |
 
 The reason: `emgr` and `emgr_s3` answer a resize request with a `301`
 redirect to wherever the derivative is stored, and k6 follows it, so
@@ -533,17 +533,17 @@ Real `k6` run, `SCENARIO=cold`, `VUS=2`, `DURATION=20s`, both against the
 same `origin` corpus, both with zero non-2xx/timeout/connection errors
 (`results/imgproxy-cold-vus2.json`, `results/emgr-cold-vus2.json`):
 
-| Metric | imgproxy | emgr (local_fs) |
-|---|---:|---:|
-| Requests (2xx) | 1001 | 337 |
-| Non-2xx / timeout / conn error | 0 / 0 / 0 | 0 / 0 / 0 |
-| Throughput | 50.01 req/s | 33.59 req/s |
-| p50 (med) | 24.75 ms | 24.03 ms |
-| p90 | 83.14 ms | 181.76 ms |
-| p99 | 176.34 ms | 284.60 ms |
-| p99.9 | 187.74 ms | 554.05 ms |
-| max | 199.44 ms | 560.26 ms |
-| avg response size | 152,091 B | 232,918 B |
+| Metric                         | imgproxy    | emgr (local_fs) |
+| ------------------------------ | ----------: | --------------: |
+| Requests (2xx)                 | 1001        | 337             |
+| Non-2xx / timeout / conn error | 0 / 0 / 0   | 0 / 0 / 0       |
+| Throughput                     | 50.01 req/s | 33.59 req/s     |
+| p50 (med)                      | 24.75 ms    | 24.03 ms        |
+| p90                            | 83.14 ms    | 181.76 ms       |
+| p99                            | 176.34 ms   | 284.60 ms       |
+| p99.9                          | 187.74 ms   | 554.05 ms       |
+| max                            | 199.44 ms   | 560.26 ms       |
+| avg response size              | 152,091 B   | 232,918 B       |
 
 At this (deliberately low, `MAX_CONCURRENT_PROCESSING=2`) concurrency
 level, imgproxy sustained roughly 1.5x emgr's throughput and had a visibly

@@ -110,7 +110,7 @@ mod tests {
     #[tokio::test]
     async fn valid_token_is_accepted() {
         let addr = spawn(test_router(configured("correct-token", false))).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
 
         let response = client
             .get(format!("http://{addr}/metrics"))
@@ -126,7 +126,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_token_is_rejected_with_401_and_www_authenticate() {
         let addr = spawn(test_router(configured("correct-token", false))).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
 
         let response = client
             .get(format!("http://{addr}/metrics"))
@@ -150,7 +150,7 @@ mod tests {
     #[tokio::test]
     async fn missing_token_is_rejected_with_401() {
         let addr = spawn(test_router(configured("correct-token", false))).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
 
         let response = client
             .get(format!("http://{addr}/metrics"))
@@ -164,7 +164,7 @@ mod tests {
     #[tokio::test]
     async fn opt_out_allows_unauthenticated_access() {
         let addr = spawn(test_router(configured("correct-token", true))).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
 
         let response = client
             .get(format!("http://{addr}/metrics"))
@@ -178,7 +178,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_authorization_header_is_rejected_with_401() {
         let addr = spawn(test_router(configured("correct-token", false))).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
 
         let response = client
             .get(format!("http://{addr}/metrics"))

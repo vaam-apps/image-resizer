@@ -35,16 +35,50 @@ pub fn install_crypto_provider() -> Result<(), Box<dyn std::error::Error + Send 
         })
 }
 
-/// Test-only equivalent of [`install_crypto_provider`], safe to call from any
-/// number of tests in any order.
+/// Idempotent equivalent of [`install_crypto_provider`], safe to call any number
+/// of times from any number of threads.
+///
+/// Deliberately **not** `#[cfg(test)]`. Integration tests under `tests/` link
+/// this crate compiled *without* `cfg(test)`, so a test-gated helper is
+/// invisible to them - `tests/storage_s3_handler.rs` builds a real S3 client,
+/// which needs a provider, and would panic in `build_https_client`.
 ///
 /// `install_default` fails if a provider is already installed, and Rust runs
 /// tests concurrently in one process, so the first test to get there would
 /// win and every other would error. `Once` makes the call idempotent, and the
 /// result is deliberately ignored: by the time a second caller arrives the
 /// provider is installed, which is all the caller actually needs.
+/// A `reqwest::Client` for tests, with the crypto provider guaranteed installed.
+///
+/// Prefer this over `reqwest::Client::new()` in test code. Not a style
+/// preference: `Client::new()` **panics** when no provider has been installed,
+/// and whether one has depends on whether some *other* test in the same binary
+/// happened to install one first. That makes a bare `Client::new()` pass or
+/// fail depending on the feature set and the test-ordering - which is exactly
+/// how `non_download_routes_are_left_untouched` passed under `local_fs` and
+/// failed under `s3`, having been missed when the other tests in its own file
+/// were fixed.
+///
+/// Routing construction through here makes the dependency structural: you
+/// cannot obtain a Client without the installer having run.
+#[cfg(test)]
+pub fn test_http_client() -> reqwest::Client {
+    ensure_crypto_provider_installed();
+    reqwest::Client::new()
+}
+
+/// Former name of [`ensure_crypto_provider_installed`], kept for in-crate test
+/// call sites.
+///
+/// The public function had to lose its `#[cfg(test)]` gate so integration tests
+/// under `tests/` could reach it; this alias means that change did not have to
+/// touch every unit test at the same time.
 #[cfg(test)]
 pub fn ensure_crypto_provider_for_tests() {
+    ensure_crypto_provider_installed();
+}
+
+pub fn ensure_crypto_provider_installed() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {

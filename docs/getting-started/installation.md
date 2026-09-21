@@ -46,12 +46,12 @@ Error: No storage features are enabled
 Every build must name at least one storage backend explicitly, from
 `Cargo.toml`'s `[features]`:
 
-| Feature | What it does |
-|---|---|
-| `local_fs` | Store resized images on local disk. No external dependency - the easiest way to get started. |
-| `s3` | Store resized images in S3 or an S3-compatible service (MinIO). Needs a reachable endpoint - see [Docker deployment](../deployment/docker.md) for a MinIO-backed `compose.yaml` setup. |
+| Feature     | What it does                                                                                                                                                                                                                                                                              |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local_fs`  | Store resized images on local disk. No external dependency - the easiest way to get started.                                                                                                                                                                                              |
+| `s3`        | Store resized images in S3 or an S3-compatible service (MinIO). Needs a reachable endpoint - see [Docker deployment](../deployment/docker.md) for a MinIO-backed `compose.yaml` setup.                                                                                                    |
 | `in_memory` | An in-process cache. Only reachable in this crate's own test builds ([GH #39](https://github.com/vaam-store/image-resizer/issues/39)) - selecting it in a release build falls through to the same "no storage backend" error above. Useful for `cargo test`, not for running the service. |
-| `otel` | OpenTelemetry tracing + a Prometheus `/metrics` endpoint. Combine with a storage feature, e.g. `local_fs,otel`. |
+| `otel`      | OpenTelemetry tracing + a Prometheus `/metrics` endpoint. Combine with a storage feature, e.g. `local_fs,otel`.                                                                                                                                                                           |
 
 You can enable more than one storage feature in the same binary - see
 `STORAGE_TYPE` in [Configuration](configuration.md) for how the backend is

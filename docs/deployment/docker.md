@@ -13,12 +13,12 @@ This guide explains how to build and run `emgr` with Docker.
 The `Dockerfile` in the project root defines **four deploy targets** and no
 default/unnamed final stage, so `--target` is required:
 
-| Target | Storage | OpenTelemetry / `/metrics` |
-|---|---|---|
-| `fs_deploy` | local filesystem | no |
-| `fs_otel_deploy` | local filesystem | yes |
-| `s3_deploy` | S3 / MinIO | no |
-| `s3_otel_deploy` | S3 / MinIO | yes |
+| Target           | Storage          | OpenTelemetry / `/metrics` |
+| ---------------- | ---------------- | -------------------------- |
+| `fs_deploy`      | local filesystem | no                         |
+| `fs_otel_deploy` | local filesystem | yes                        |
+| `s3_deploy`      | S3 / MinIO       | no                         |
+| `s3_otel_deploy` | S3 / MinIO       | yes                        |
 
 `healthcheck` (the binary the image's own `HEALTHCHECK` runs) is built into
 all four automatically.

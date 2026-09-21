@@ -464,7 +464,7 @@ mod tests {
         // Builds a real reqwest Client through production code, which panics
         // unless a rustls crypto provider is installed. `main()` does that at
         // startup; `cargo test` never runs `main()`.
-        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
+        crate::modules::utils::crypto::ensure_crypto_provider_installed();
         let request_count = Arc::new(AtomicUsize::new(0));
         let url =
             spawn_counting_test_image_server(tiny_png_bytes(), Arc::clone(&request_count)).await;
@@ -541,7 +541,7 @@ mod tests {
         // Builds a real reqwest Client through production code, which panics
         // unless a rustls crypto provider is installed. `main()` does that at
         // startup; `cargo test` never runs `main()`.
-        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
+        crate::modules::utils::crypto::ensure_crypto_provider_installed();
         // No server listening at this address - every connection attempt
         // fails immediately, standing in for a leader that fails.
         let dead_url = "http://127.0.0.1:1".to_string();

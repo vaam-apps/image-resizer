@@ -20,16 +20,16 @@ discovered later.
 
 ## Decision
 
-| Was | Now | Pure Rust? |
-|---|---|---|
-| mozjpeg (encode) | `jpeg-encoder` | yes |
-| mozjpeg `Decompress::scale` | `jpeg-decoder` `Decoder::scale()` | yes |
-| libwebp | `vaam-image-webp` (fork of `image-webp`) | yes |
-| libavif + AOM (encode) | `ravif` → `rav1e` | yes |
-| libavif + dav1d (decode) | `vaam-avif-decode` → `rav1d` | yes |
-| mimalloc | platform allocator | n/a |
-| aws-lc-rs | `rustls-graviola` | yes |
-| zstd-sys | dropped; gzip/brotli/deflate kept | yes |
+| Was                         | Now                                      | Pure Rust? |
+| --------------------------- | ---------------------------------------- | ---------- |
+| mozjpeg (encode)            | `jpeg-encoder`                           | yes        |
+| mozjpeg `Decompress::scale` | `jpeg-decoder` `Decoder::scale()`        | yes        |
+| libwebp                     | `vaam-image-webp` (fork of `image-webp`) | yes        |
+| libavif + AOM (encode)      | `ravif` → `rav1e`                        | yes        |
+| libavif + dav1d (decode)    | `vaam-avif-decode` → `rav1d`             | yes        |
+| mimalloc                    | platform allocator                       | n/a        |
+| aws-lc-rs                   | `rustls-graviola`                        | yes        |
+| zstd-sys                    | dropped; gzip/brotli/deflate kept        | yes        |
 
 Two forks were necessary and both are meant to be temporary:
 
@@ -71,33 +71,33 @@ comparing encoders, since equal quality numbers are not equal quality. See
 "Encode time, at the matched-quality point" below, where AVIF in particular
 reverses sign.
 
-| Benchmark | C build | Pure Rust | Ratio |
-|---|---|---|---|
-| `encode/jpeg_baseline/photo` | 0.92 ms | 2.83 ms | **3.09x slower** |
-| `encode/jpeg_444/photo` | 1.28 ms | 2.69 ms | **2.09x slower** |
-| `encode/jpeg_progressive/photo` | 24.76 ms | 2.84 ms | **0.11x** |
-| `encode/jpeg_444_progressive/photo` | 33.57 ms | 2.77 ms | **0.08x** |
-| `decode/jpeg/photo_1920x1080` | 4.71 ms | 10.90 ms | **2.32x slower** |
-| `decode/jpeg/photo_640x360` | 0.60 ms | 1.48 ms | **2.45x slower** |
-| `encode/avif/photo` | 62.69 ms | 93.61 ms | **1.49x slower** |
-| `encode/webp/photo` | 20.30 ms | 107.40 ms | **5.29x slower** |
-| `encode/png_best/photo` (control) | 64.53 ms | 65.67 ms | 1.02x |
-| `encode/png_default/photo` (control) | 1.36 ms | 1.26 ms | 0.93x |
+| Benchmark                            | C build  | Pure Rust | Ratio            |
+| ------------------------------------ | -------- | --------- | ---------------- |
+| `encode/jpeg_baseline/photo`         | 0.92 ms  | 2.83 ms   | **3.09x slower** |
+| `encode/jpeg_444/photo`              | 1.28 ms  | 2.69 ms   | **2.09x slower** |
+| `encode/jpeg_progressive/photo`      | 24.76 ms | 2.84 ms   | **0.11x**        |
+| `encode/jpeg_444_progressive/photo`  | 33.57 ms | 2.77 ms   | **0.08x**        |
+| `decode/jpeg/photo_1920x1080`        | 4.71 ms  | 10.90 ms  | **2.32x slower** |
+| `decode/jpeg/photo_640x360`          | 0.60 ms  | 1.48 ms   | **2.45x slower** |
+| `encode/avif/photo`                  | 62.69 ms | 93.61 ms  | **1.49x slower** |
+| `encode/webp/photo`                  | 20.30 ms | 107.40 ms | **5.29x slower** |
+| `encode/png_best/photo` (control)    | 64.53 ms | 65.67 ms  | 1.02x            |
+| `encode/png_default/photo` (control) | 1.36 ms  | 1.26 ms   | 0.93x            |
 
 ### End-to-end pipeline (the number that actually matters)
 
 Micro-benchmarks isolate one codec call; this is the whole request path — decode, resize,
 encode.
 
-| Pipeline | C build | Pure Rust | Ratio |
-|---|---|---|---|
-| `photo_like_thumbnail_jpg` | 6.06 ms | 8.32 ms | **1.37x slower** |
-| `photo_4k_large_downscale_thumbnail_jpg` | 19.14 ms | 28.93 ms | **1.51x slower** |
-| `photo_real_thumbnail_jpg` | 3.64 ms | 5.55 ms | **1.53x slower** |
-| `photo_real_large_large_downscale_thumbnail_jpg` | 3.39 ms | 5.71 ms | **1.69x slower** |
-| `photo_with_exif_strip_metadata_default` | 6.07 ms | 8.40 ms | **1.38x slower** |
-| `alpha_resize_webp` | 5.30 ms | 19.80 ms | **3.73x slower** |
-| `flat_resize_png` (control) | 8.59 ms | 8.19 ms | 0.95x |
+| Pipeline                                         | C build  | Pure Rust | Ratio            |
+| ------------------------------------------------ | -------- | --------- | ---------------- |
+| `photo_like_thumbnail_jpg`                       | 6.06 ms  | 8.32 ms   | **1.37x slower** |
+| `photo_4k_large_downscale_thumbnail_jpg`         | 19.14 ms | 28.93 ms  | **1.51x slower** |
+| `photo_real_thumbnail_jpg`                       | 3.64 ms  | 5.55 ms   | **1.53x slower** |
+| `photo_real_large_large_downscale_thumbnail_jpg` | 3.39 ms  | 5.71 ms   | **1.69x slower** |
+| `photo_with_exif_strip_metadata_default`         | 6.07 ms  | 8.40 ms   | **1.38x slower** |
+| `alpha_resize_webp`                              | 5.30 ms  | 19.80 ms  | **3.73x slower** |
+| `flat_resize_png` (control)                      | 8.59 ms  | 8.19 ms   | 0.95x            |
 
 **A JPEG request costs roughly 1.4–1.7x what it did; a WebP one costs 3.7x.** The PNG
 control at 0.95x confirms these are real codec effects rather than environment drift.
@@ -123,13 +123,13 @@ Re-measured through `ImageService::encode_jpeg`/`encode_webp`/`avif_codec::encod
 themselves (`examples/codec_report.rs`), all 24 Kodak images, zero failed
 bisections:
 
-| Format | <= 0.0150 | <= 0.0080 | <= 0.0035 |
-|---|---|---|---|
+| Format                              | <= 0.0150  | <= 0.0080  | <= 0.0035  |
+| ----------------------------------- | ---------- | ---------- | ---------- |
 | **JPEG** (default, non-progressive) | **0.995x** | **1.000x** | **1.000x** |
-| **JPEG progressive** (`jpgo:1:`) | **2.014x** | **1.658x** | **1.317x** |
-| **WebP** | 1.208x | 1.174x | 1.200x |
-| **AVIF** | 1.158x | 1.101x | 1.040x |
-| PNG (control, lossless) | 1.000x | - | - |
+| **JPEG progressive** (`jpgo:1:`)    | **2.014x** | **1.658x** | **1.317x** |
+| **WebP**                            | 1.208x     | 1.174x     | 1.200x     |
+| **AVIF**                            | 1.158x     | 1.101x     | 1.040x     |
+| PNG (control, lossless)             | 1.000x     | -          | -          |
 
 The trellis loss is real, but it lands **only on the opt-in progressive path**,
 where it is worse than the old figure suggested - up to 2x at low quality. The
@@ -144,14 +144,14 @@ AOM used 4:2:0.
 Same corpus and method, comparing formats *within* each build rather than across
 builds. This is what should drive `.auto` negotiation.
 
-| Relative to that build's JPEG | <= 0.0150 | <= 0.0080 | <= 0.0035 |
-|---|---|---|---|
-| **Pure Rust** - AVIF | **0.567x** | **0.700x** | **0.787x** |
-| **Pure Rust** - WebP | **0.798x** | **0.951x** | 1.072x |
-| **Pure Rust** - JPEG progressive | 1.382x | 1.278x | 1.177x |
-| C stack - AVIF | 0.496x | 0.656x | 0.781x |
-| C stack - WebP | 0.656x | 0.805x | 0.884x |
-| C stack - JPEG progressive | 0.663x | 0.759x | 0.874x |
+| Relative to that build's JPEG    | <= 0.0150  | <= 0.0080  | <= 0.0035  |
+| -------------------------------- | ---------- | ---------- | ---------- |
+| **Pure Rust** - AVIF             | **0.567x** | **0.700x** | **0.787x** |
+| **Pure Rust** - WebP             | **0.798x** | **0.951x** | 1.072x     |
+| **Pure Rust** - JPEG progressive | 1.382x     | 1.278x     | 1.177x     |
+| C stack - AVIF                   | 0.496x     | 0.656x     | 0.781x     |
+| C stack - WebP                   | 0.656x     | 0.805x     | 0.884x     |
+| C stack - JPEG progressive       | 0.663x     | 0.759x     | 0.874x     |
 
 Two conclusions, both actionable:
 
@@ -175,12 +175,12 @@ benches decode fixtures made by the encoder under test. That remains true of
 those benches - but `examples/codec_report.rs` sidesteps it by decoding **the
 same C-produced files** in both builds:
 
-| Format | C | Pure Rust | Ratio |
-|---|---|---|---|
-| JPEG | 0.72 ms | 1.78 ms | **2.44x slower** |
-| JPEG progressive | 0.79 ms | 1.83 ms | **2.27x slower** |
-| WebP | 1.95 ms | 5.66 ms | **2.89x slower** |
-| AVIF | 5.00 ms | 6.45 ms | **1.28x slower** |
+| Format           | C       | Pure Rust | Ratio            |
+| ---------------- | ------- | --------- | ---------------- |
+| JPEG             | 0.72 ms | 1.78 ms   | **2.44x slower** |
+| JPEG progressive | 0.79 ms | 1.83 ms   | **2.27x slower** |
+| WebP             | 1.95 ms | 5.66 ms   | **2.89x slower** |
+| AVIF             | 5.00 ms | 6.45 ms   | **1.28x slower** |
 
 AVIF at 1.28x is the standout, and it is `rav1d` **with assembly disabled**
 against `dav1d` **with NEON assembly enabled**. That is far better than the
@@ -190,13 +190,13 @@ wider - but a catastrophic x86_64 regression now looks much less likely.
 
 ### Encode time, at the matched-quality point
 
-| Format | C | Pure Rust | Ratio |
-|---|---|---|---|
-| JPEG | 0.95-1.08 ms | 2.79-3.04 ms | **~2.9x slower** |
-| JPEG progressive | 16.05-26.72 ms | 2.82-3.05 ms | **0.11-0.18x** |
-| WebP | 20.47-25.84 ms | 112.52-128.25 ms | **5.0x-5.5x slower** |
-| AVIF | 66.53-100.11 ms | 59.76-124.61 ms | **0.81x-1.23x** |
-| PNG (control) | 78.33 ms | 76.06 ms | 1.00x |
+| Format           | C               | Pure Rust        | Ratio                |
+| ---------------- | --------------- | ---------------- | -------------------- |
+| JPEG             | 0.95-1.08 ms    | 2.79-3.04 ms     | **~2.9x slower**     |
+| JPEG progressive | 16.05-26.72 ms  | 2.82-3.05 ms     | **0.11-0.18x**       |
+| WebP             | 20.47-25.84 ms  | 112.52-128.25 ms | **5.0x-5.5x slower** |
+| AVIF             | 66.53-100.11 ms | 59.76-124.61 ms  | **0.81x-1.23x**      |
+| PNG (control)    | 78.33 ms        | 76.06 ms         | 1.00x                |
 
 Two of these must be read with the size table, not quoted alone:
 
@@ -231,11 +231,11 @@ perceptual metric would. It does not.
 Re-scoring the DSSIM-matched files with **SSIMULACRA2** (higher is better;
 90 = visually lossless, 70 = good, 50 = fair), median over 24 images:
 
-| DSSIM target | AVIF | JPEG | WebP |
-|---|---|---|---|
-| 0.0150 | **26.83** | 26.43 | 24.63 (**-2.20**) |
-| 0.0080 | **48.43** | 47.09 | 46.25 (**-2.18**) |
-| 0.0035 | 66.30 | 66.33 | **66.49** |
+| DSSIM target | AVIF      | JPEG  | WebP              |
+| ------------ | --------- | ----- | ----------------- |
+| 0.0150       | **26.83** | 26.43 | 24.63 (**-2.20**) |
+| 0.0080       | **48.43** | 47.09 | 46.25 (**-2.18**) |
+| 0.0035       | 66.30     | 66.33 | **66.49**         |
 
 Files DSSIM calls equal quality are not equal: WebP lands ~2.2 points below AVIF
 at the two looser targets. So **WebP's size numbers are optimistic** - at genuinely
@@ -267,12 +267,12 @@ whether these implementations are right, so the decoders were checked directly:
 the same C-encoded files decoded by both builds, compared pixel for pixel
 (`examples/codec_report.rs conform`), 72 files per format.
 
-| Format | bit-exact | max abs diff | mean abs diff | verdict |
-|---|---|---|---|---|
-| **WebP** | **72/72** | 0 | 0.00000 | conformant |
-| JPEG | 0/72 | 4 | 0.047 | expected |
-| JPEG progressive | 0/72 | 4 | 0.050 | expected |
-| **AVIF** | 0/72 | **64** | **0.785** | **investigate** |
+| Format           | bit-exact | max abs diff | mean abs diff | verdict         |
+| ---------------- | --------- | ------------ | ------------- | --------------- |
+| **WebP**         | **72/72** | 0            | 0.00000       | conformant      |
+| JPEG             | 0/72      | 4            | 0.047         | expected        |
+| JPEG progressive | 0/72      | 4            | 0.050         | expected        |
+| **AVIF**         | 0/72      | **64**       | **0.785**     | **investigate** |
 
 VP8 and AV1 decoding are exactly specified, so a conforming decoder must be
 bit-identical. JPEG is not - the standard deliberately leaves IDCT precision
@@ -315,24 +315,24 @@ The encoder was, as found, missing four of the five things libwebp does. Each ga
 was visible in the source rather than inferred, and each was fixed and measured
 separately:
 
-| Gap | Evidence in the source | Outcome |
-|---|---|---|
-| Loop filter never applied | `loop_filter::` appears only in the decoder | **fixed** - level was 63, now 0: mean -4.0% |
-| B_PRED (4x4 intra) | `LumaMode::B => unreachable!()` | **fixed** - the largest single win, ~-30% |
-| Token probability adaptation | "currently just not updating these" | **fixed** - -2.9% / -5.5% / -4.7% |
-| Adaptive quantisation | `segments_enabled: false`, `todo!()` if set | **fixed** - smaller *and* better quality |
-| Trellis / token optimisation | absent | **implemented and reverted** - see below |
+| Gap                          | Evidence in the source                      | Outcome                                     |
+| ---------------------------- | ------------------------------------------- | ------------------------------------------- |
+| Loop filter never applied    | `loop_filter::` appears only in the decoder | **fixed** - level was 63, now 0: mean -4.0% |
+| B_PRED (4x4 intra)           | `LumaMode::B => unreachable!()`             | **fixed** - the largest single win, ~-30%   |
+| Token probability adaptation | "currently just not updating these"         | **fixed** - -2.9% / -5.5% / -4.7%           |
+| Adaptive quantisation        | `segments_enabled: false`, `todo!()` if set | **fixed** - smaller *and* better quality    |
+| Trellis / token optimisation | absent                                      | **implemented and reverted** - see below    |
 
 Measured identically at each step, median size against libwebp on Kodak:
 
-| Step | <= 0.0150 | <= 0.0080 | <= 0.0035 |
-|---|---|---|---|
-| As found | 2.148x | 2.185x | 2.287x |
-| + RD 16x16 mode decision | 1.893x | 1.924x | 2.191x |
-| + loop-filter fix | 1.857x | 1.924x | 2.191x |
-| + B_PRED | 1.306x | 1.285x | 1.363x |
-| + token probability adaptation | 1.256x | 1.244x | 1.307x |
-| **+ adaptive quantisation** | **1.208x** | **1.174x** | **1.200x** |
+| Step                           | <= 0.0150  | <= 0.0080  | <= 0.0035  |
+| ------------------------------ | ---------- | ---------- | ---------- |
+| As found                       | 2.148x     | 2.185x     | 2.287x     |
+| + RD 16x16 mode decision       | 1.893x     | 1.924x     | 2.191x     |
+| + loop-filter fix              | 1.857x     | 1.924x     | 2.191x     |
+| + B_PRED                       | 1.306x     | 1.285x     | 1.363x     |
+| + token probability adaptation | 1.256x     | 1.244x     | 1.307x     |
+| **+ adaptive quantisation**    | **1.208x** | **1.174x** | **1.200x** |
 
 **Roughly 46% fewer bytes than the encoder started with**, and enough to move WebP
 from larger-than-JPEG at every level back to 0.798x / 0.951x / 1.072x of it.

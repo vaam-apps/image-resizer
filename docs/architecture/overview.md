@@ -70,11 +70,11 @@ backends and both the pre- and post-AVIF `FORMATS` sweeps — the exact ratio mo
 fixture mix, roughly 3.3x-3.7x cold and 2.6x-2.9x throughput across those runs), the current
 headline position is:
 
-| Path | emgr | imgproxy | Ratio |
-|---|---:|---:|---:|
-| Cold (cache miss), p50 | — | — | emgr **~3.48x slower** |
-| Cold (cache miss), throughput | — | — | emgr **~2.86x lower** |
-| Warm (cache hit), p50 | 0.39 ms | ~21 ms | not a processing comparison — see below |
+| Path                          | emgr    | imgproxy | Ratio                                   |
+| ----------------------------- | ------: | -------: | --------------------------------------: |
+| Cold (cache miss), p50        | —       | —        | emgr **~3.48x slower**                  |
+| Cold (cache miss), throughput | —       | —        | emgr **~2.86x lower**                   |
+| Warm (cache hit), p50         | 0.39 ms | ~21 ms   | not a processing comparison — see below |
 
 - **Cold path cost.** A cache miss pays for *two* HTTP round trips per delivered image
   (`req/image = 2.00` in the baseline tables) instead of imgproxy's one: the client requests the

@@ -13,12 +13,28 @@
 # std binary links the builder's glibc regardless. If you bump this, bump the
 # runtime base in lockstep and actually RUN the resulting image.
 #
-# Pinned by digest (GH #48) - "rust:1" is a floating tag that gets
-# repointed on every new 1.x release, which lets replicas built on
-# different days/nodes end up compiled with a different rustc. This is
-# rustc 1.97.1 as of the pin below; bump deliberately with
-# `docker pull rust:1 && docker inspect rust:1 --format='{{index .RepoDigests 0}}'`.
-FROM rust@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 as builder
+# Pinned by digest (GH #48) - a floating tag gets repointed on every new 1.x
+# release, which lets replicas built on different days/nodes end up compiled
+# with a different rustc. This is rustc 1.98.1 as of the pin below.
+#
+# Bump deliberately with:
+#   docker pull rust:1-bookworm
+#   docker inspect rust:1-bookworm --format='{{index .RepoDigests 0}}'
+#
+# Note the tag is `rust:1-bookworm`, NOT `rust:1`. The header above requires
+# this stage to stay on Debian 12 to match the distroless runtime, and `rust:1`
+# is free to move to a newer Debian at any time - which would satisfy the
+# "bump the digest" instruction while silently breaking the constraint the
+# instruction exists to protect.
+#
+# Raised from 1.97.1 by #134: `avif-decode` declares `rust-version = "1.98"`,
+# so the old pin failed with
+#   error: rustc 1.97.1 is not supported by the following package:
+#     vaam-avif-decode@3.0.1-vaam.1 requires rustc 1.98
+# Worth knowing that this surfaces ONLY in the Docker build: CI compiles with
+# `dtolnay/rust-toolchain@stable`, which tracks whatever stable is that day, so
+# an MSRV rise in a dependency is invisible there and fails here.
+FROM rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e as builder
 
 # No apt layer (#134). This image used to install nasm, cmake, meson and
 # ninja-build to compile the vendored C sources of mozjpeg-sys (libjpeg-turbo),
@@ -30,11 +46,46 @@ FROM rust@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a9
 # is pulling in C. `cargo tree -e build | grep -E '^(cc|cmake|nasm)'` resolves
 # empty today and the CI `no-native-deps` job fails the build if that stops
 # being true - an apt line here would be the symptom, not the fix.
+# `.cargo/config.toml` is NOT mounted into these builder stages - only
+# Cargo.lock, Cargo.toml, src and benches are - so nothing it sets applies
+# here. The `s3` feature needs one thing from it (#134):
+# `aws_smithy_http_client`'s `CryptoMode::Custom` is behind
+# `#[cfg(all(aws_sdk_unstable, feature = "__rustls"))]`, and without the cfg the
+# build fails with
+#   error[E0599]: no variant ... named `Custom` found for enum `CryptoMode`
+# That variant is the only way to hand the AWS SDK our own rustls provider
+# instead of its built-in aws-lc-rs/ring choices, so it is load-bearing for
+# keeping C out of the s3 build.
+#
+# Set here as an explicit ENV rather than by mounting `.cargo/`, deliberately.
+# That file also sets `target-cpu=x86-64-v3` for x86_64, which these images have
+# never been built with; mounting it to fix a compile error would quietly raise
+# the runtime CPU floor to Haswell (2013)+ as a side effect. Raising it may well
+# be right, but it is a deployment decision and belongs in its own change.
+ENV RUSTFLAGS="--cfg aws_sdk_unstable"
+
 ENV APP_NAME=emgr
 
 WORKDIR /app
 
 ENV CARGO_TERM_COLOR=always
+
+# Cache-mount discipline for the five builder stages below, learned from a
+# real failure (#134): they run CONCURRENTLY under BuildKit, and cache mounts
+# default to `sharing=shared`, which permits simultaneous access.
+#
+# - `/usr/local/cargo/registry/*` and `/usr/local/cargo/git/db` hold the same
+#   content whatever feature set a stage builds, so they are worth sharing -
+#   but two cargo processes mutating them at once is not safe. Adding the git
+#   dependencies made this reachable for the first time (there were none
+#   before), and it failed as
+#     failed to remove directory `/usr/local/cargo/git/db/vaam-avif-decode-...`
+#     Caused by: Directory not empty (os error 39)
+#   i.e. one stage deleting a git db another was still populating.
+#   `sharing=locked` makes BuildKit serialise them.
+# - `/app/target` is NOT shared: each stage compiles a different feature set,
+#   so one target directory would have them evicting each other's artifacts on
+#   every build as well as racing. Each gets its own `id=`.
 
 FROM builder as local_fs_builder
 
@@ -43,10 +94,10 @@ RUN \
   --mount=type=bind,source=./Cargo.toml,target=/app/Cargo.toml \
   --mount=type=bind,source=./src,target=/app/src \
   --mount=type=bind,source=./benches,target=/app/benches \
-  --mount=type=cache,target=/app/target \
-  --mount=type=cache,target=/usr/local/cargo/registry/cache \
-  --mount=type=cache,target=/usr/local/cargo/registry/index \
-  --mount=type=cache,target=/usr/local/cargo/git/db \
+  --mount=type=cache,target=/app/target,id=target-local_fs_builder \
+  --mount=type=cache,target=/usr/local/cargo/registry/cache,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/registry/index,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
   cargo build --profile perf --locked --bin emgr --features="local_fs" \
   && cp ./target/perf/$APP_NAME $APP_NAME
 
@@ -57,10 +108,10 @@ RUN \
   --mount=type=bind,source=./Cargo.toml,target=/app/Cargo.toml \
   --mount=type=bind,source=./src,target=/app/src \
   --mount=type=bind,source=./benches,target=/app/benches \
-  --mount=type=cache,target=/app/target \
-  --mount=type=cache,target=/usr/local/cargo/registry/cache \
-  --mount=type=cache,target=/usr/local/cargo/registry/index \
-  --mount=type=cache,target=/usr/local/cargo/git/db \
+  --mount=type=cache,target=/app/target,id=target-local_fs_otel_builder \
+  --mount=type=cache,target=/usr/local/cargo/registry/cache,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/registry/index,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
   cargo build --profile perf --locked --bin emgr --features="local_fs otel" \
   && cp ./target/perf/$APP_NAME $APP_NAME
 
@@ -71,10 +122,10 @@ RUN \
   --mount=type=bind,source=./Cargo.toml,target=/app/Cargo.toml \
   --mount=type=bind,source=./src,target=/app/src \
   --mount=type=bind,source=./benches,target=/app/benches \
-  --mount=type=cache,target=/app/target \
-  --mount=type=cache,target=/usr/local/cargo/registry/cache \
-  --mount=type=cache,target=/usr/local/cargo/registry/index \
-  --mount=type=cache,target=/usr/local/cargo/git/db \
+  --mount=type=cache,target=/app/target,id=target-s3_fs_builder \
+  --mount=type=cache,target=/usr/local/cargo/registry/cache,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/registry/index,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
   cargo build --profile perf --locked --bin emgr --features="s3" \
   && cp ./target/perf/$APP_NAME $APP_NAME
 
@@ -85,10 +136,10 @@ RUN \
   --mount=type=bind,source=./Cargo.toml,target=/app/Cargo.toml \
   --mount=type=bind,source=./src,target=/app/src \
   --mount=type=bind,source=./benches,target=/app/benches \
-  --mount=type=cache,target=/app/target \
-  --mount=type=cache,target=/usr/local/cargo/registry/cache \
-  --mount=type=cache,target=/usr/local/cargo/registry/index \
-  --mount=type=cache,target=/usr/local/cargo/git/db \
+  --mount=type=cache,target=/app/target,id=target-s3_fs_otel_builder \
+  --mount=type=cache,target=/usr/local/cargo/registry/cache,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/registry/index,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
   cargo build --profile perf --locked --bin emgr --features="s3 otel" \
   && cp ./target/perf/$APP_NAME $APP_NAME
 
@@ -99,10 +150,10 @@ RUN \
   --mount=type=bind,source=./Cargo.toml,target=/app/Cargo.toml \
   --mount=type=bind,source=./src,target=/app/src \
   --mount=type=bind,source=./benches,target=/app/benches \
-  --mount=type=cache,target=/app/target \
-  --mount=type=cache,target=/usr/local/cargo/registry/cache \
-  --mount=type=cache,target=/usr/local/cargo/registry/index \
-  --mount=type=cache,target=/usr/local/cargo/git/db \
+  --mount=type=cache,target=/app/target,id=target-healthcheck_builder \
+  --mount=type=cache,target=/usr/local/cargo/registry/cache,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/registry/index,sharing=locked \
+  --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
   cargo build --profile prod --locked --bin healthcheck \
   && cp ./target/prod/healthcheck healthcheck
 

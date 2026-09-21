@@ -224,7 +224,7 @@ mod tests {
         // These build real reqwest Clients through production code, which
         // panics unless a rustls crypto provider is installed. `main()`
         // does that at startup; `cargo test` never runs `main()`.
-        crate::modules::utils::crypto::ensure_crypto_provider_for_tests();
+        crate::modules::utils::crypto::ensure_crypto_provider_installed();
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = TestStorageDir(std::env::temp_dir().join(format!(

@@ -90,12 +90,12 @@ See [ADR 0001](adr/0001-image-engine.md) (engine choice), [ADR 0003](adr/0003-we
 
 Selected via `STORAGE_TYPE` and gated by Cargo feature flags — only the backend(s) the binary was compiled with are available:
 
-| Feature | Backend | Notes |
-|---|---|---|
-| `local_fs` | Local filesystem | `LOCAL_FS_STORAGE_PATH` |
-| `s3` | S3 / MinIO-compatible | `MINIO_ENDPOINT_URL`, `MINIO_ACCESS_KEY_ID`, `MINIO_SECRET_ACCESS_KEY`, `MINIO_BUCKET`, `MINIO_REGION` |
-| `in_memory` | In-process map | Test-only — compiled only under `cfg(test)` even when this feature is on, so it is never reachable from a real running binary, not just "discouraged in production" |
-| `otel` | — | Not a storage backend: enables OpenTelemetry tracing/metrics export (Jaeger/OTLP) and mounts an authenticated `/metrics` endpoint. Independent of the three above. |
+| Feature     | Backend               | Notes                                                                                                                                                               |
+| ----------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local_fs`  | Local filesystem      | `LOCAL_FS_STORAGE_PATH`                                                                                                                                             |
+| `s3`        | S3 / MinIO-compatible | `MINIO_ENDPOINT_URL`, `MINIO_ACCESS_KEY_ID`, `MINIO_SECRET_ACCESS_KEY`, `MINIO_BUCKET`, `MINIO_REGION`                                                              |
+| `in_memory` | In-process map        | Test-only — compiled only under `cfg(test)` even when this feature is on, so it is never reachable from a real running binary, not just "discouraged in production" |
+| `otel`      | —                     | Not a storage backend: enables OpenTelemetry tracing/metrics export (Jaeger/OTLP) and mounts an authenticated `/metrics` endpoint. Independent of the three above.  |
 
 ## Quick start
 
@@ -163,32 +163,32 @@ Full grammar and every response code: [API reference](docs/user-guide/api-refere
 
 Micro-benchmarks (single-operation, criterion, darwin/arm64, synthetic fixture — see [Testing](docs/development/testing.md#two-fixture-kinds-synthetic-and-photo) for why real photographs measure differently, often faster, for the same operation):
 
-| Operation | Time |
-|---|---:|
-| JPEG decode, 1920x1080 | 15.28 ms (`jpeg-decoder`; was 7.23 ms via `mozjpeg` — **2.11x slower**) |
-| JPEG encode (baseline) | 2.83 ms (`jpeg-encoder`; was 0.92 ms via `mozjpeg` — **3.09x slower**) |
-| JPEG encode (progressive) | 2.84 ms (`jpeg-encoder`; was 24.76 ms via `mozjpeg`'s `JCP_MAX_COMPRESSION` — **faster, but doing less work and shipping a 1.3–2.0x larger file**, see ADR 0006) |
-| PNG encode (production path: `CompressionType::Best`) | 98.93 ms |
-| WebP encode | 107.40 ms (was 20.30 ms via libwebp — **5.29x slower**). Deliberate: the same encoder work cut WebP output size ~46%. See ADR 0006. |
-| WebP decode, 1920x1080 | 45.51 ms — **not comparable to the old 32.82 ms**: this bench decodes fixtures made by the encoder under test, and that encoder changed. See ADR 0006. |
-| AVIF encode (`DEFAULT_AVIF_SPEED = 6`) | 93.61 ms (`ravif`/`rav1e`, no assembly; was 62.69 ms via `libavif`/AOM — **1.49x slower** at fixed quality, but *faster* at matched quality, see ADR 0006) |
-| AVIF decode, 1920x1080 | 17.81 ms — **not comparable to the old 54.35 ms**: fixtures moved from AOM 4:2:0 to ravif 4:4:4, so the two runs decode different bitstreams. See ADR 0006. |
-| Resize, downscale, Lanczos3 (`fast_image_resize`) | 3.43 ms |
-| Resize, downscale, Triangle→Bilinear (`fast_image_resize`) | 1.15 ms |
-| Full pipeline, photo → thumbnail JPEG | 8.32 ms (was 6.06 ms — **1.37x slower**) |
-| Full pipeline, 4K photo → large downscale | 28.93 ms (was 19.14 ms — **1.51x slower**) |
-| Full pipeline, alpha resize → WebP | 19.80 ms (was 5.30 ms — **3.73x slower**, the WebP encoder trade above) |
+| Operation                                                  | Time                                                                                                                                                             |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------: |
+| JPEG decode, 1920x1080                                     | 15.28 ms (`jpeg-decoder`; was 7.23 ms via `mozjpeg` — **2.11x slower**)                                                                                          |
+| JPEG encode (baseline)                                     | 2.83 ms (`jpeg-encoder`; was 0.92 ms via `mozjpeg` — **3.09x slower**)                                                                                           |
+| JPEG encode (progressive)                                  | 2.84 ms (`jpeg-encoder`; was 24.76 ms via `mozjpeg`'s `JCP_MAX_COMPRESSION` — **faster, but doing less work and shipping a 1.3–2.0x larger file**, see ADR 0006) |
+| PNG encode (production path: `CompressionType::Best`)      | 98.93 ms                                                                                                                                                         |
+| WebP encode                                                | 107.40 ms (was 20.30 ms via libwebp — **5.29x slower**). Deliberate: the same encoder work cut WebP output size ~46%. See ADR 0006.                              |
+| WebP decode, 1920x1080                                     | 45.51 ms — **not comparable to the old 32.82 ms**: this bench decodes fixtures made by the encoder under test, and that encoder changed. See ADR 0006.           |
+| AVIF encode (`DEFAULT_AVIF_SPEED = 6`)                     | 93.61 ms (`ravif`/`rav1e`, no assembly; was 62.69 ms via `libavif`/AOM — **1.49x slower** at fixed quality, but *faster* at matched quality, see ADR 0006)       |
+| AVIF decode, 1920x1080                                     | 17.81 ms — **not comparable to the old 54.35 ms**: fixtures moved from AOM 4:2:0 to ravif 4:4:4, so the two runs decode different bitstreams. See ADR 0006.      |
+| Resize, downscale, Lanczos3 (`fast_image_resize`)          | 3.43 ms                                                                                                                                                          |
+| Resize, downscale, Triangle→Bilinear (`fast_image_resize`) | 1.15 ms                                                                                                                                                          |
+| Full pipeline, photo → thumbnail JPEG                      | 8.32 ms (was 6.06 ms — **1.37x slower**)                                                                                                                         |
+| Full pipeline, 4K photo → large downscale                  | 28.93 ms (was 19.14 ms — **1.51x slower**)                                                                                                                       |
+| Full pipeline, alpha resize → WebP                         | 19.80 ms (was 5.30 ms — **3.73x slower**, the WebP encoder trade above)                                                                                          |
 
 **Speed is only half of it — and output size is the half that matters more**, because a
 cached service pays encode time once per image but ships the bytes on every delivery. At
 DSSIM-matched quality across all 24 Kodak photographs, relative to the C codecs:
 
-| Format | ≤ 0.0150 | ≤ 0.0080 | ≤ 0.0035 |
-|---|---|---|---|
-| JPEG (default) | 0.995x | 1.000x | 1.000x |
-| JPEG progressive (`jpgo:1:`) | 2.014x | 1.658x | 1.317x |
-| WebP | 1.208x | 1.174x | 1.200x |
-| AVIF | 1.158x | 1.101x | 1.040x |
+| Format                       | ≤ 0.0150 | ≤ 0.0080 | ≤ 0.0035 |
+| ---------------------------- | -------- | -------- | -------- |
+| JPEG (default)               | 0.995x   | 1.000x   | 1.000x   |
+| JPEG progressive (`jpgo:1:`) | 2.014x   | 1.658x   | 1.317x   |
+| WebP                         | 1.208x   | 1.174x   | 1.200x   |
+| AVIF                         | 1.158x   | 1.101x   | 1.040x   |
 
 Default JPEG is at **parity** — production used mozjpeg's `JCP_FASTEST` profile, which has
 no trellis quantisation, so there was none to lose. The trellis cost lands only on the
@@ -196,11 +196,11 @@ opt-in progressive path.
 
 **What to serve.** Within the pure-Rust stack, relative to JPEG at matched quality:
 
-| | low quality | mid | high quality |
-|---|---|---|---|
-| AVIF | **0.567x** | **0.700x** | **0.787x** |
-| WebP | 0.798x | 0.951x | 1.072x |
-| JPEG progressive | 1.382x | 1.278x | 1.177x |
+|                  | low quality | mid        | high quality |
+| ---------------- | ----------- | ---------- | ------------ |
+| AVIF             | **0.567x**  | **0.700x** | **0.787x**   |
+| WebP             | 0.798x      | 0.951x     | 1.072x       |
+| JPEG progressive | 1.382x      | 1.278x     | 1.177x       |
 
 AVIF wins decisively at every level, on both DSSIM and SSIMULACRA2. WebP is worth serving
 to clients that accept it but not AVIF below the top quality band — though DSSIM flatters
