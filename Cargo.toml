@@ -265,7 +265,7 @@ async-trait = "0.1" # Required for async methods in traits
 
 # Deterministic RNG for the generated fixture corpus (benches/fixtures.rs),
 # also linked into the `benchmark` bin, which serves that same corpus locally.
-rand = "0.8"
+rand = "0.9"
 
 # Machine-readable output for the `benchmark` load-test bin (BENCHMARK_JSON_OUTPUT)
 serde = { version = "1", features = ["derive"] }
