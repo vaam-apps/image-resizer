@@ -294,7 +294,7 @@ tracing = { version = "0.1", features = ["attributes"] }
 prometheus = { version = "0.14", optional = true }
 dashmap = "6"
 tower_governor = "0.8"
-hmac = "0.12"   # NOT 0.13: it needs digest 0.11, i.e. the sha2 0.11 generation the pin above deliberately refuses
+hmac = "0.13"   # NOT 0.13: it needs digest 0.11, i.e. the sha2 0.11 generation the pin above deliberately refuses
 subtle = "2.6"
 base64 = "0.23"
 fast_image_resize = { version = "6.1", features = ["image"] }
