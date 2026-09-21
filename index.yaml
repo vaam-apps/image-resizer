@@ -4,6 +4,28 @@ entries:
   - annotations:
       category: Application
     apiVersion: v2
+    appVersion: 0.2.2
+    created: "2026-09-21T06:26:39.201237903Z"
+    dependencies:
+    - name: common
+      repository: https://bjw-s-labs.github.io/helm-charts
+      version: 4.0.1
+    description: A Helm chart for Kubernetes
+    digest: 163cfdb8209804b867b79d1ad38fe2fe17408dd7c6d047e70c3a1883836c1fbd
+    home: https://github.com/vaam-store/image-resizer
+    maintainers:
+    - email: team@vaam.com
+      name: VAAM Team
+    name: emgr
+    sources:
+    - https://github.com/vaam-store/image-resizer
+    type: application
+    urls:
+    - https://github.com/vaam-apps/image-resizer/releases/download/emgr-0.1.10/emgr-0.1.10.tgz
+    version: 0.1.10
+  - annotations:
+      category: Application
+    apiVersion: v2
     appVersion: 0.1.2
     created: "2026-08-20T00:50:22.418043503Z"
     dependencies:
@@ -46,6 +68,35 @@ entries:
     - https://github.com/vaam-store/image-resizer/releases/download/emgr-0.1.8/emgr-0.1.8.tgz
     version: 0.1.8
   emgr-serverless:
+  - annotations:
+      category: Application
+    apiVersion: v2
+    appVersion: 0.2.2
+    created: "2026-09-21T06:26:39.460736336Z"
+    dependencies:
+    - name: common
+      repository: oci://registry-1.docker.io/bitnamicharts
+      tags:
+      - bitnami-common
+      version: '*'
+    description: A Helm chart for EmgR application
+    digest: 5a6786b3de49d2f2568e8ee043bb44d2e16b09a408fe6c907dab55a0f5090beb
+    home: https://github.com/vaam-store/image-resizer
+    keywords:
+    - vaam
+    - eat
+    - emgr
+    - serverless
+    maintainers:
+    - email: team@vaam.com
+      name: VAAM Team
+    name: emgr-serverless
+    sources:
+    - https://github.com/vaam-store/image-resizer
+    type: application
+    urls:
+    - https://github.com/vaam-apps/image-resizer/releases/download/emgr-serverless-0.1.4/emgr-serverless-0.1.4.tgz
+    version: 0.1.4
   - annotations:
       category: Application
     apiVersion: v2
@@ -133,4 +184,4 @@ entries:
     urls:
     - https://github.com/vaam-store/image-resizer/releases/download/emgr-serverless-0.1.1/emgr-serverless-0.1.1.tgz
     version: 0.1.1
-generated: "2026-08-20T00:50:22.606164815Z"
+generated: "2026-09-21T06:26:39.460764669Z"
