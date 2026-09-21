@@ -109,7 +109,7 @@ issue #53/#27) has landed. Both `emgr` and `emgr_s3` speak the same
 imgproxy-style signed-path grammar -- the storage backend changes where the
 redirect *points*, never the request URL shape:
 
-```
+```http
 GET /{signature}/{processing_options}/{base64url source}.{extension}
 -> 301 Location: <CDN_BASE_URL>/<key>
 ```
@@ -569,7 +569,7 @@ reached `healthy` and the bucket was created and made public correctly),
 but for a time `emgr_s3` built successfully and then **crashed on
 startup**:
 
-```
+```text
 /app/emgr: /lib/aarch64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by /app/emgr)
 ```
 

@@ -8,7 +8,7 @@ It aims to be a credible, self-hosted alternative to [imgproxy](https://imgproxy
 
 Requests use imgproxy's signed-path grammar, not query parameters:
 
-```
+```http
 GET /{signature}/{processing_options}/{plain|base64 source}.{extension}
 ```
 

@@ -48,7 +48,7 @@ Every other short option code below matches imgproxy's own vocabulary.
 
 ### Resize an image (signed URL)
 
-```
+```http
 GET /{signature}/{processing_options}/{plain|base64 source}.{extension}
 ```
 
@@ -123,7 +123,7 @@ against the code later.
 
 ##### Resize type (`rs:`)
 
-```
+```text
 rs:{type}:{width}:{height}
 ```
 
@@ -143,7 +143,7 @@ type is rejected with `400`, not silently substituted
 
 ##### Explicit crop (`c:`)
 
-```
+```text
 c:{width}:{height}[:{gravity_tokens...}]
 ```
 
@@ -165,7 +165,7 @@ parsed (`options.rs:75-80`, `591-596`).
 
 ##### Gravity (`gr:`)
 
-```
+```text
 gr:{type}
 gr:fp:{x}:{y}
 ```
@@ -193,7 +193,7 @@ Two divergences from imgproxy, both deliberate:
 
 ##### Watermark (`wm:` and friends)
 
-```
+```text
 wm:{opacity}[:{position}[:{x_offset}[:{y_offset}[:{scale}]]]]
 wmu:{base64url-encoded-watermark-url}
 wms:{width}:{height}
@@ -229,7 +229,7 @@ blank (`wm:0.5::10`) to keep its default (`options.rs:632-667`).
 
 ##### JPEG tuning (`jpgo:`)
 
-```
+```text
 jpgo:{progressive}:{no_subsample}
 ```
 
@@ -249,7 +249,7 @@ through; it does not implement trellis quantisation at all.
 
 ##### Trim (`t:`)
 
-```
+```text
 t:{threshold}:{color}:{equal_hor}:{equal_ver}
 ```
 
@@ -271,7 +271,7 @@ applied, right after decode/autorotate and before crop/resize
 
 ##### Padding (`pd:`)
 
-```
+```text
 pd:{top}:{right}:{bottom}:{left}
 ```
 
@@ -291,7 +291,7 @@ present. Applied after `ex:` (extend), always enlarging the canvas via a
 
 ##### Presets (`pr:`) and the processing-option allowlist
 
-```
+```text
 pr:{name}[:{name2}...]
 ```
 
@@ -422,7 +422,7 @@ placeholders only, never use these for anything real), resizing
 `https://images.example.com/photo.jpg` to fill 300x300 at quality 80,
 output JPEG:
 
-```
+```http
 GET /de7BKgwO8wFeNZWRWgp3UB9jKwOkVoYM_eMKau2ECgw/rs:fill:300:300/q:80/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -442,7 +442,7 @@ what the code actually computes.)
 
 ### Download a resized image
 
-```
+```http
 GET /api/images/files/{key}
 ```
 
@@ -470,7 +470,7 @@ produces: an optional `STORAGE_SUB_PATH` prefix followed by a
 
 ### Health check
 
-```
+```http
 GET /health
 ```
 
@@ -479,7 +479,7 @@ version field. `GET /` redirects here (`307 Temporary Redirect`).
 
 ### Metrics
 
-```
+```http
 GET /metrics
 ```
 
