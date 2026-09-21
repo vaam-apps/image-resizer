@@ -62,7 +62,14 @@ controllers:
     containers:
       app:
         image:
-          repository: ghcr.io/vaam-store/image-resizer
+          # `vaam-store` until 2026-09-20. `build.yml` derives its push
+          # destination from `github.repository`, so it followed the
+          # vaam-store -> vaam-apps rename automatically; this hardcoded
+          # reader did not. It was not a broken install — the old path
+          # still resolves — but it is a SEPARATE package frozen at the
+          # rename, whose `fs-latest` carries a different digest from the
+          # live one, so a default install quietly ran pre-rename code.
+          repository: ghcr.io/vaam-apps/image-resizer
           tag: '{{ .Values.global.version }}'
           # `global.version` defaults to the floating "fs-latest" tag (see
           # above), so `IfNotPresent` let different nodes keep whatever
