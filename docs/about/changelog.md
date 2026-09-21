@@ -101,6 +101,14 @@ until then, everything below is "Unreleased" in that format's sense.
   end-to-end harness against imgproxy (`bench-imgproxy/`), wired into a
   CI regression gate with a 15% threshold and a PR comment report
   ([#20](https://github.com/vaam-store/image-resizer/issues/20)).
+- Every C or C++ dependency removed from the build: `mozjpeg`
+  (JPEG decode+encode), the `webp` crate/libwebp (WebP), `libavif`/AOM/dav1d
+  (AVIF), and `mimalloc` were replaced by pure-Rust equivalents
+  (`jpeg-decoder`/`jpeg-encoder`, `vaam-image-webp`, `ravif`/`avif-decode`,
+  the platform allocator) — see [Performance notes](../../PERFORMANCE_OPTIMIZATIONS.md)
+  ([#134](https://github.com/vaam-store/image-resizer/issues/120)). The
+  figures recorded above for `#63`/`#67`/`#76` describe the mozjpeg-era
+  implementation and have not been re-measured against the new codecs.
 
 ## Formats and processing options
 
@@ -163,6 +171,10 @@ until then, everything below is "Unreleased" in that format's sense.
   CI if `src/modules/env/env.rs` and
   [Configuration](../getting-started/configuration.md) disagree in
   either direction ([#47](https://github.com/vaam-store/image-resizer/issues/47)).
+- A `no-native-deps` CI job fails the build if any dependency reintroduces
+  native (C/C++) code, and the Docker build and CI no longer install
+  `nasm`, `cmake`, `meson`, or `ninja-build`
+  ([#134](https://github.com/vaam-store/image-resizer/issues/120)).
 - A Knative Serverless Helm chart (`helm/serverless/`) added alongside
   the Deployment-based chart (`helm/emgr/`), for scale-to-zero setups.
 - A `PodDisruptionBudget` and liveness/readiness/startup probes added to

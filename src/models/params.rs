@@ -9,13 +9,17 @@
 /// `.{extension}` (`crate::modules::url::source`), not a query parameter.
 ///
 /// #49 adds three variants on top of the original `{Jpg, Png, Webp}`:
-/// - `Avif` - encode *and* decode, both via `libavif`
-///   (`src/services/image/avif_codec.rs`, #67/#68): AOM for encode
-///   (replacing the pure-Rust `ravif`/`rav1e` encoder this crate shipped
-///   before #68) and dav1d for decode (previously entirely unsupported -
-///   an AVIF *source* URL failed outright). `image`'s own `avif`/
-///   `avif-native` features are not used for either direction any more -
-///   see `Cargo.toml`'s `image`/`libavif-sys` dependency comments.
+/// - `Avif` - encode *and* decode, both in `avif_codec`
+///   (`src/services/image/avif_codec.rs`). The history here runs in a
+///   circle and is easy to misread: this crate originally encoded AVIF with
+///   `ravif`/`rav1e` and could not decode it at all; #67/#68 moved both
+///   directions to `libavif` (AOM to encode, dav1d to decode); #134 removed
+///   every C dependency and moved encode back to `ravif`/`rav1e`, with
+///   decode now on `avif-decode`/`rav1d` - the Rust port of dav1d - so
+///   decode support survives the return to pure Rust rather than regressing
+///   to the pre-#67 state. `image`'s own `avif`/`avif-native` features are
+///   used for neither direction. See `Cargo.toml`'s AVIF dependency
+///   comment.
 /// - `Gif` - decode and encode, including multi-frame animation
 ///   (`ImageService::process_image_blocking_with_limits`,
 ///   `src/services/image/handler.rs`).

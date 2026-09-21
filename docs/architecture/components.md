@@ -12,7 +12,8 @@ not assumed from names.
 Builds the Tokio runtime by hand (not `#[tokio::main]`) so `worker_threads` can be a runtime
 value read from `TOKIO_WORKER_THREADS`, cgroup-aware via `modules::utils::cgroup::effective_cpu_count`
 rather than `num_cpus::get()` directly (a cgroup-limited container otherwise oversizes the
-runtime for the host's full core count). Sets `mimalloc::MiMalloc` as the global allocator.
+runtime for the host's full core count). Sets the platform `System` allocator as the global
+allocator, replacing `mimalloc`/`libmimalloc-sys` (#134).
 Installs a SIGTERM/SIGINT-triggered graceful shutdown with a configurable drain deadline
 (`SHUTDOWN_TIMEOUT_SECS`, default 20s — comfortably under Kubernetes' default 30s
 `terminationGracePeriodSeconds`).
@@ -136,12 +137,15 @@ path, and the decode/resize/encode pipeline:
   animated GIF/WebP sources are detected and routed to `encode_animation` separately.
 - `decode_with_limits` — dispatches by source format, each with a fallback to the plain
   `image`-crate decoder (`decode_with_image_crate`) on failure:
-  - **JPEG** — `decode_jpeg_scaled` (mozjpeg/libjpeg-turbo, DCT-scaled when a resize makes a smaller
-    decode safe, full-size otherwise; issue #67).
-  - **WebP** — `decode_webp_libwebp` (real libwebp via FFI, issue #66) — replaces the `image`
-    crate's pure-Rust `image-webp` decoder.
-  - **AVIF** — `avif_codec::decode` (`libavif`/dav1d, issue #67/#68) — the first release where AVIF
-    is accepted as a *source* format at all; previously any `.avif` source was rejected outright.
+  - **JPEG** — `decode_jpeg_scaled` (`jpeg-decoder`'s `Decoder::scale()`, DCT-scaled when a resize
+    makes a smaller decode safe, full-size otherwise; issue #67, backend swapped from
+    mozjpeg/libjpeg-turbo to pure Rust by #134).
+  - **WebP** — the WebP decode path (issue #66, backend swapped from real libwebp via FFI to
+    [`vaam-image-webp`](https://github.com/vaam-apps/vaam-image-webp) by #134) — replaces the
+    `image` crate's pure-Rust `image-webp` decoder.
+  - **AVIF** — `avif_codec::decode` (`avif-decode`/`rav1d`, issue #67/#68, backend swapped from
+    `libavif`/dav1d to pure Rust by #134) — the first release where AVIF is accepted as a *source*
+    format at all; previously any `.avif` source was rejected outright.
   - **PNG/GIF** — always `decode_with_image_crate` (the `image` crate's own decoders); untouched by
     the above.
 - `encode_with_max_bytes` — binary-searches JPEG quality down until encoded output fits a
@@ -149,11 +153,16 @@ path, and the decode/resize/encode pipeline:
 
 ### `image/avif_codec.rs`
 
-AVIF encode and decode via `libavif`, both directions (issue #67/#68): `encode` (AOM backend,
-`DEFAULT_AVIF_SPEED = 6`) and `decode`/`peek_dimensions` (dav1d backend, the latter re-running the
-same megapixel-overflow-checked resolution guard `ImageService::check_source_resolution` does, as
-defense in depth around `libavif`'s own header parse). Replaces the pure-Rust `ravif`/`rav1e`
-encoder and adds AVIF source decode, which this service previously had no path for at all.
+AVIF encode and decode via pure-Rust crates, both directions (issue #67/#68; backend swapped from
+`libavif` (AOM + dav1d, vendored C) to pure Rust by #134): `encode` (`ravif`/`rav1e`,
+`DEFAULT_AVIF_SPEED = 6`) and `decode`/`peek_dimensions` (`avif-decode`/`rav1d`, the latter
+re-running the same megapixel-overflow-checked resolution guard
+`ImageService::check_source_resolution` does, as defense in depth around the container parse). On
+the encode side this is a return to `ravif`/`rav1e`, which `libavif`/AOM had replaced (`adr/0004`,
+`adr/0005`) before #67/#68 shipped; #134's motivation is removing every C/C++ dependency, not a
+re-run of that quality/speed comparison — see the `ravif`/`avif-decode` dependency comments in
+`Cargo.toml`. AVIF source decode itself is unaffected by #134: this service previously had no
+decode path at all before #67/#68 added one.
 
 ### `image/source_guard.rs`
 

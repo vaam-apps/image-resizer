@@ -8,7 +8,7 @@ It aims to be a credible, self-hosted alternative to [imgproxy](https://imgproxy
 
 Requests use imgproxy's signed-path grammar, not query parameters:
 
-```
+```http
 GET /{signature}/{processing_options}/{plain|base64 source}.{extension}
 ```
 
@@ -71,14 +71,14 @@ Never a redirect back to the caller-supplied source ([GH #25](https://github.com
 ## Image engine
 
 - **Resize**: [`fast_image_resize`](https://docs.rs/fast_image_resize) (SIMD), not the `image` crate's own resize kernel — roughly 5x faster on a downscale (`resize_fir/downscale lanczos3`: 3.43ms vs. the `image`-crate kernel's 17ms; see [`.bench-baseline/BASELINE.md`](.bench-baseline/BASELINE.md)).
-- **JPEG decode**: [`mozjpeg`](https://docs.rs/mozjpeg)/libjpeg-turbo, with DCT-scaled decode at 1/2, 1/4, or 1/8 resolution when the requested output is a ≥2x downscale, falling back to a full-size mozjpeg decode otherwise.
-- **JPEG encode**: `mozjpeg` at the `JCP_FASTEST` profile by default — smaller and faster than the old `image`-crate encoder on every axis measured. Explicitly-requested progressive output (`jpgo:1:...`) gets the full `JCP_MAX_COMPRESSION` profile instead, since that cost (~19x baseline) is opt-in only.
-- **WebP encode**: the [`webp`](https://docs.rs/webp) crate — real libwebp, lossy and lossless, plus animated WebP via `AnimEncoder`.
-- **WebP decode**: real `libwebp` via FFI, not the `image` crate's pure-Rust `image-webp` decoder — falls back to it only if the libwebp path fails.
-- **AVIF encode and decode**: both directions via [`libavif`](src/services/image/avif_codec.rs) — AOM for encode, dav1d for decode. AVIF is now a supported *source* format, not just an output one; it used to be rejected outright. This replaced the pure-Rust `ravif`/`rav1e` encoder this service previously shipped.
+- **JPEG decode**: [`jpeg-decoder`](https://docs.rs/jpeg-decoder), with DCT-scaled decode at 1/2, 1/4, or 1/8 resolution via `Decoder::scale()` when the requested output is a ≥2x downscale, falling back to a full-size decode otherwise. Chosen specifically for `scale()` — the faster `zune-jpeg` (what the `image` crate decodes JPEG through) has no scaled-decode API at all, so using it here would silently drop that optimization. `jpeg-decoder` is in maintenance mode upstream; it's depended on for an API that isn't going to change, not for ongoing development.
+- **JPEG encode**: [`jpeg-encoder`](https://docs.rs/jpeg-encoder), a pure-Rust encoder with its own AVX2 path, replacing `mozjpeg`. It carries the APIs the mozjpeg path relied on (`set_progressive`, `set_quantization_tables`, `add_app_segment` for the raw EXIF/ICC markers), but does not implement trellis quantization, so output is expected to be measurably larger than mozjpeg's at matched quality.
+- **WebP encode and decode**: [`vaam-image-webp`](https://github.com/vaam-apps/vaam-image-webp), this org's fork of `image-rs/image-webp` tracking its unreleased lossy VP8 encoder, replacing the `webp` crate (libwebp). No published crate encodes lossy WebP in pure Rust — `image-webp`'s released version is lossless-only, and lossless WebP runs roughly 5-12x larger than lossy on photographic content, which would make the format useless for this service's main job. The fork is temporary by construction: once upstream cuts a release with lossy encoding, this goes back to the crates.io crate and the fork is archived.
+- **AVIF encode**: [`ravif`](https://docs.rs/ravif) (wrapping `rav1e`), replacing `libavif-sys`'s AOM backend.
+- **AVIF decode**: [`avif-decode`](https://docs.rs/avif-decode) (wrapping `rav1d`, the Rust port of `dav1d`), replacing `libavif-sys`'s dav1d backend. Preferred over depending on `rav1d` directly, whose public surface is still dav1d's C-shaped API — `avif-decode` offers a plain `from_avif` → `to_image` Rust interface. AVIF remains a supported *source* format as well as an output one (it used to be rejected outright before #67/#68).
 - **PNG / GIF**: the `image` crate.
 
-**All four native codec libraries (mozjpeg, libwebp, libavif, AOM/dav1d) are compiled from source and statically linked** — the runtime container ships no codec `.so` files.
+**emgr has no C or C++ dependencies (#134)** — every codec above is pure Rust, built by `cargo` like any other dependency and linked directly into the binary. The Docker build and CI no longer install `nasm`, `cmake`, `meson`, or `ninja-build`, and a `no-native-deps` CI job fails the build if any dependency reintroduces native code. This did *not* remove every third-party notice obligation: `jpeg-encoder` is itself licensed `(MIT OR Apache-2.0) AND IJG` — its default quantization and Huffman tables derive from the Independent JPEG Group reference implementation — so the IJG notice in [`NOTICE`](NOTICE) stays required. See `NOTICE` for the full per-codec licence table.
 
 **HEIC is not supported** — neither as a source nor as an output format.
 
@@ -90,12 +90,12 @@ See [ADR 0001](adr/0001-image-engine.md) (engine choice), [ADR 0003](adr/0003-we
 
 Selected via `STORAGE_TYPE` and gated by Cargo feature flags — only the backend(s) the binary was compiled with are available:
 
-| Feature | Backend | Notes |
-|---|---|---|
-| `local_fs` | Local filesystem | `LOCAL_FS_STORAGE_PATH` |
-| `s3` | S3 / MinIO-compatible | `MINIO_ENDPOINT_URL`, `MINIO_ACCESS_KEY_ID`, `MINIO_SECRET_ACCESS_KEY`, `MINIO_BUCKET`, `MINIO_REGION` |
-| `in_memory` | In-process map | Test-only — compiled only under `cfg(test)` even when this feature is on, so it is never reachable from a real running binary, not just "discouraged in production" |
-| `otel` | — | Not a storage backend: enables OpenTelemetry tracing/metrics export (Jaeger/OTLP) and mounts an authenticated `/metrics` endpoint. Independent of the three above. |
+| Feature     | Backend               | Notes                                                                                                                                                               |
+| ----------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local_fs`  | Local filesystem      | `LOCAL_FS_STORAGE_PATH`                                                                                                                                             |
+| `s3`        | S3 / MinIO-compatible | `MINIO_ENDPOINT_URL`, `MINIO_ACCESS_KEY_ID`, `MINIO_SECRET_ACCESS_KEY`, `MINIO_BUCKET`, `MINIO_REGION`                                                              |
+| `in_memory` | In-process map        | Test-only — compiled only under `cfg(test)` even when this feature is on, so it is never reachable from a real running binary, not just "discouraged in production" |
+| `otel`      | —                     | Not a storage backend: enables OpenTelemetry tracing/metrics export (Jaeger/OTLP) and mounts an authenticated `/metrics` endpoint. Independent of the three above.  |
 
 ## Quick start
 
@@ -155,7 +155,7 @@ Full grammar and every response code: [API reference](docs/user-guide/api-refere
 
 **Cold cache** (per delivered image, imgproxy v4.0.13, three-way `bench-imgproxy/` harness — see [`.bench-baseline/BASELINE.md`](.bench-baseline/BASELINE.md) for every run, backend, and `FORMATS` configuration this is drawn from):
 
-**emgr is roughly 3.48x slower on p50 and delivers roughly 2.86x less throughput than imgproxy on a cold cache.** This project does not claim parity with imgproxy on raw processing speed, and this README will not pretend otherwise. The exact ratio moves with storage backend (`local_fs` vs `s3`) and which output formats are in play, but the gap has consistently been in the 3x-4x (p50) / ~2.6x-2.9x (throughput) range across every measured configuration.
+**TODO(re-measure)** (was: "emgr is roughly 3.48x slower on p50 and delivers roughly 2.86x less throughput than imgproxy on a cold cache," with the gap reported as consistently 3x-4x on p50 / ~2.6x-2.9x on throughput across every measured configuration). That comparison ran the full processing pipeline through the old C codecs (`mozjpeg`, libwebp, `libavif`/AOM/dav1d); with all of them replaced by pure-Rust equivalents (#134), the ratio needs re-measuring before it can be quoted again. This project does not claim parity with imgproxy on raw processing speed, and this README will not pretend otherwise — but until the numbers above are re-run, no specific ratio is asserted either.
 
 **Warm cache** (repeat request for an already-processed image): **emgr ~0.39 ms vs. imgproxy ~21 ms.**
 
@@ -163,20 +163,57 @@ Full grammar and every response code: [API reference](docs/user-guide/api-refere
 
 Micro-benchmarks (single-operation, criterion, darwin/arm64, synthetic fixture — see [Testing](docs/development/testing.md#two-fixture-kinds-synthetic-and-photo) for why real photographs measure differently, often faster, for the same operation):
 
-| Operation | Time |
-|---|---:|
-| JPEG decode, 1920x1080 | 7.32 ms |
-| JPEG encode (baseline) | 930 µs |
-| JPEG encode (progressive) | 17.58 ms |
-| PNG encode (production path: `CompressionType::Best`) | 98.93 ms |
-| WebP encode | 23.66 ms |
-| WebP decode, 1920x1080 (libwebp) | 32.27 ms |
-| AVIF encode (`DEFAULT_AVIF_SPEED = 6`) | 65.89 ms |
-| AVIF decode, 1920x1080 (dav1d) | 55.13 ms |
-| Resize, downscale, Lanczos3 (`fast_image_resize`) | 3.43 ms |
-| Resize, downscale, Triangle→Bilinear (`fast_image_resize`) | 1.15 ms |
-| Full pipeline, photo → thumbnail JPEG | 6.15 ms |
-| Full pipeline, 4K photo → large downscale | 19.59 ms |
+| Operation                                                  | Time                                                                                                                                                             |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------: |
+| JPEG decode, 1920x1080                                     | 15.28 ms (`jpeg-decoder`; was 7.23 ms via `mozjpeg` — **2.11x slower**)                                                                                          |
+| JPEG encode (baseline)                                     | 2.83 ms (`jpeg-encoder`; was 0.92 ms via `mozjpeg` — **3.09x slower**)                                                                                           |
+| JPEG encode (progressive)                                  | 2.84 ms (`jpeg-encoder`; was 24.76 ms via `mozjpeg`'s `JCP_MAX_COMPRESSION` — **faster, but doing less work and shipping a 1.3–2.0x larger file**, see ADR 0006) |
+| PNG encode (production path: `CompressionType::Best`)      | 98.93 ms                                                                                                                                                         |
+| WebP encode                                                | 107.40 ms (was 20.30 ms via libwebp — **5.29x slower**). Deliberate: the same encoder work cut WebP output size ~46%. See ADR 0006.                              |
+| WebP decode, 1920x1080                                     | 45.51 ms — **not comparable to the old 32.82 ms**: this bench decodes fixtures made by the encoder under test, and that encoder changed. See ADR 0006.           |
+| AVIF encode (`DEFAULT_AVIF_SPEED = 6`)                     | 93.61 ms (`ravif`/`rav1e`, no assembly; was 62.69 ms via `libavif`/AOM — **1.49x slower** at fixed quality, but *faster* at matched quality, see ADR 0006)       |
+| AVIF decode, 1920x1080                                     | 17.81 ms — **not comparable to the old 54.35 ms**: fixtures moved from AOM 4:2:0 to ravif 4:4:4, so the two runs decode different bitstreams. See ADR 0006.      |
+| Resize, downscale, Lanczos3 (`fast_image_resize`)          | 3.43 ms                                                                                                                                                          |
+| Resize, downscale, Triangle→Bilinear (`fast_image_resize`) | 1.15 ms                                                                                                                                                          |
+| Full pipeline, photo → thumbnail JPEG                      | 8.32 ms (was 6.06 ms — **1.37x slower**)                                                                                                                         |
+| Full pipeline, 4K photo → large downscale                  | 28.93 ms (was 19.14 ms — **1.51x slower**)                                                                                                                       |
+| Full pipeline, alpha resize → WebP                         | 19.80 ms (was 5.30 ms — **3.73x slower**, the WebP encoder trade above)                                                                                          |
+
+**Speed is only half of it — and output size is the half that matters more**, because a
+cached service pays encode time once per image but ships the bytes on every delivery. At
+DSSIM-matched quality across all 24 Kodak photographs, relative to the C codecs:
+
+| Format                       | ≤ 0.0150 | ≤ 0.0080 | ≤ 0.0035 |
+| ---------------------------- | -------- | -------- | -------- |
+| JPEG (default)               | 0.995x   | 1.000x   | 1.000x   |
+| JPEG progressive (`jpgo:1:`) | 2.014x   | 1.658x   | 1.317x   |
+| WebP                         | 1.208x   | 1.174x   | 1.200x   |
+| AVIF                         | 1.158x   | 1.101x   | 1.040x   |
+
+Default JPEG is **smaller than mozjpeg's**, by 4–17%. Production used mozjpeg's
+`JCP_FASTEST` profile, which has no trellis quantisation, so there was none to lose — and
+two lines of encoder configuration (optimized Huffman tables, and 2 progressive scans
+instead of 4) took it past parity. Entropy coding only, so the decoded pixels are
+unchanged.
+
+**What to serve.** Within the pure-Rust stack, relative to JPEG at matched quality:
+
+|                  | low quality | mid        | high quality |
+| ---------------- | ----------- | ---------- | ------------ |
+| AVIF             | **0.567x**  | **0.700x** | **0.787x**   |
+| WebP             | 0.798x      | 0.951x     | 1.072x       |
+| JPEG progressive | 1.382x      | 1.278x     | 1.177x       |
+
+AVIF wins decisively at every level, on both DSSIM and SSIMULACRA2. WebP is worth serving
+to clients that accept it but not AVIF below the top quality band — though DSSIM flatters
+WebP by ~2.2 SSIMULACRA2 points there, so treat its advantage as nearer 15% than 20%
+([ADR 0006](adr/0006-pure-rust-codecs.md) has the detail). Progressive JPEG is no longer a
+size win at all — mozjpeg's trellis was doing that work — so its remaining argument is
+progressive *rendering*.
+
+Full method, the like-for-like decode comparison, and the accepted regressions are in
+[ADR 0006](adr/0006-pure-rust-codecs.md). Reproduce with
+`cargo run --release --example codec_report -- encode <corpus-dir> <out-dir>`.
 
 PNG's number above is the one that used to read as 1.71 ms in this table — that measured the `image` crate's default `CompressionType::Fast`, which production never uses; `encode_single_image` builds an explicit `CompressionType::Best` encoder, ~56x more expensive on this fixture. See `.bench-baseline/BASELINE.md`'s "PNG encode correction" section for the full story.
 

@@ -8,9 +8,34 @@
 # x86-64-v3 == Haswell (2013)+: AVX2, FMA, BMI1/2. Override on a known host with
 #   RUSTFLAGS="-C target-cpu=native" cargo build --profile perf
 [target.'cfg(target_arch = "x86_64")']
-rustflags = ["-C", "target-cpu=x86-64-v3"]
+rustflags = ["-C", "target-cpu=x86-64-v3", "--cfg", "aws_sdk_unstable"]
 
 # NOTE: on a non-x86_64 host (e.g. Apple Silicon) cargo prints
 #   warning: unused manifest key: target.cfg(target_arch = "x86_64").rustflags
 # That is expected and correct — the section genuinely does not apply to this
 # host's target. It takes effect when building for x86_64.
+
+# `--cfg aws_sdk_unstable` (#134): opts into the aws-sdk-rust/smithy-rs
+# ecosystem's documented "unstable API" gate - unrelated to the target-cpu
+# tuning above, but forced to live in two places because Cargo's rustflags
+# sources do not merge. Cargo picks exactly ONE of: `RUSTFLAGS` env var, then
+# a matching `target.<triple>`/`target.<cfg>` table, then `[build]` - never a
+# union of them. Since a `target.cfg(target_arch = "x86_64")` table already
+# exists above for x86_64 builds, `[build].rustflags` below is silently
+# ignored on x86_64 hosts, so the flag has to be duplicated into that table
+# too (see it appended there) rather than just added once here.
+#
+# What it unlocks: `aws-smithy-http-client`'s `CryptoMode::Custom(CryptoProvider)`
+# variant (src/client/tls/rustls_provider.rs in that crate) is compiled out
+# entirely unless `aws_sdk_unstable` is set - it is how a caller supplies its
+# own rustls `CryptoProvider` instead of picking the crate's built-in `Ring`/
+# `AwsLc`/`AwsLcFips` choices, all three of which are C-and-assembly crypto
+# backends. `Custom` is the only path that lets `src/services/storage/
+# s3_handler.rs` hand the AWS S3 SDK the same pure-Rust Graviola provider
+# `main::install_crypto_provider()` installs for reqwest, instead of pulling
+# `aws-lc-rs`/`aws-lc-sys` or `ring` back in through the S3 client alone.
+# Upstream reserves the right to change this API's shape across releases,
+# which is exactly what the `aws_sdk_unstable` gate signals - accepted here
+# because it is the only mechanism smithy-rs offers for this.
+[build]
+rustflags = ["--cfg", "aws_sdk_unstable"]

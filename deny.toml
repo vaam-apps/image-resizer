@@ -17,12 +17,20 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 ignore = [
-    # RUSTSEC-2024-0436 (`paste` unmaintained, reached only transitively via
-    # rav1e -> pulp -> paste) previously ignored here no longer applies:
-    # #67/#68 removed `ravif`/`rav1e` entirely (replaced by `libavif-sys` -
-    # see Cargo.toml's `image`/`libavif-sys` dependency comments), which
-    # also removed `paste` from the dependency graph - `cargo tree -i paste`
-    # now finds nothing. Entry deleted rather than left as dead config.
+    # RUSTSEC-2024-0436 (`paste` unmaintained). This entry has now been added,
+    # removed and added again, so the history is worth keeping straight:
+    # it was originally ignored for rav1e; #67/#68 deleted it when libavif-sys
+    # replaced ravif/rav1e and `paste` left the graph; #134 took out the C
+    # codecs and brought ravif/rav1e back, and `avif-decode` -> `rav1d` reaches
+    # it too, so it is in the graph twice over:
+    #   cargo tree --all-features -i paste
+    #     paste v1.0.15 (proc-macro)
+    #     |-- rav1d v1.1.0  <- avif-decode
+    #     `-- rav1e v0.8.1  <- ravif
+    # `paste` is a proc-macro with no runtime component and the advisory is
+    # "unmaintained", not a vulnerability. Nothing here can act on it until
+    # both upstreams drop it.
+    "RUSTSEC-2024-0436",
 
     # RUSTSEC-2026-0258/0098/0099/0104 (h2 empty DATA frames; rustls-webpki
     # name-constraint and CRL-panic issues) were previously ignored here: GH #56
@@ -55,28 +63,58 @@ allow = [
     # webpki-root-certs, reached via reqwest 0.13 -> rustls-platform-verifier.
     # CDLA-Permissive-2.0 is the Community Data License Agreement's permissive
     # variant, which is what Mozilla's CA root bundle is published under — a
-    # data licence, no copyleft, no notice obligation (unlike IJG below).
+    # data licence, no copyleft, no notice obligation.
     # Arrived with the reqwest 0.12 -> 0.13 bump (#103). Already on the
     # allow-list in the sibling vaam-apps/vsms for the same crate and the same
     # reason, so this matches an existing org decision rather than making a
     # new one.
     "CDLA-Permissive-2.0",
 
-    # mozjpeg / mozjpeg-sys (#63 stage 2), for DCT-scaled JPEG decode. IJG is
-    # permissive and OSI-recognised, but UNLIKE every other licence above it
-    # carries an actual obligation: distributed documentation must state that
-    # the software is "based in part on the work of the Independent JPEG
-    # Group". That notice is in README.md and NOTICE — if this allow-list
-    # entry is ever removed, remove the notice with it; if mozjpeg is kept,
-    # the notice must stay. Do not treat this as a routine allow-list add.
-    "IJG",
+    # NOTE: "IJG" is deliberately NOT a blanket allow any more (#134). It used
+    # to be, for mozjpeg-sys. Removing mozjpeg did NOT remove the licence:
+    # `jpeg-encoder`, the pure-Rust replacement, is ALSO "(MIT OR Apache-2.0)
+    # AND IJG" - its default quantisation and Huffman tables come from the IJG
+    # reference implementation. Rewriting a codec in Rust does not relicense
+    # the tables it was derived from, and this was caught only because
+    # cargo-deny failed the build; it is not visible from the crate's name or
+    # its README.
+    #
+    # So the obligation stands unchanged: distributed documentation must state
+    # that the software is "based in part on the work of the Independent JPEG
+    # Group". That notice is in NOTICE and README.md and must stay for as long
+    # as the exception below exists. It is now a scoped exception rather than a
+    # global allow, so a *different* crate arriving with IJG gets flagged
+    # instead of being waved through.
 ]
 confidence-threshold = 0.8
 
-[[licenses.clarify]]
-name = "ring"
-expression = "MIT AND ISC AND OpenSSL"
-license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+# Per-crate licence exceptions. Narrower than adding to `allow` above: these
+# apply to exactly one crate each, so the same licence appearing on any other
+# dependency still fails the check.
+exceptions = [
+    # See the IJG note in `allow` above - carries a documentation obligation
+    # that is satisfied by NOTICE and README.md.
+    { name = "jpeg-encoder", allow = ["IJG"] },
+
+    # libfuzzer-sys is LLVM's libFuzzer binding (NCSA) and is a dev-dependency
+    # of a transitive dependency's fuzz targets - `cargo tree -i libfuzzer-sys`
+    # prints "nothing to print" for both `-e normal` and `-e normal,dev`, i.e.
+    # cargo never builds it and it ships in nothing. cargo-deny still walks it
+    # because its graph includes transitive dev-dependencies.
+    #
+    # Worth being explicit about, since it is a `-sys` crate that would compile
+    # C++ if it were ever actually built: it is exempted here because it is
+    # unreachable, not because a C++ dependency is acceptable. The
+    # `no-native-deps` CI job checks the real build graph and would catch it if
+    # that ever changed.
+    { name = "libfuzzer-sys", allow = ["NCSA"] },
+]
+
+# NOTE: the `[[licenses.clarify]]` entry for `ring` was removed with the C dependencies (#134).
+# `ring` left the graph with aws-lc-rs/rustls's default provider, replaced by
+# the pure-Rust `rustls-graviola`; `cargo tree -i ring` finds nothing under any
+# feature set. Deleted rather than left as dead config, matching how the
+# RUSTSEC-2024-0436 entry above was handled the first time round.
 
 [bans]
 multiple-versions = "warn"
@@ -95,3 +133,19 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# `unknown-git = "deny"` above means any git dependency must be named here.
+# vaam-image-webp (#134) is this org's fork of image-rs/image-webp, carried
+# only because no *published* crate encodes lossy WebP in pure Rust - upstream
+# has the encoder on `main` but has not released it. Cargo.toml pins it by
+# `rev`, so this allowance does not let arbitrary upstream commits in.
+#
+# This is meant to be temporary: when upstream releases lossy encoding, the
+# dependency should go back to crates.io and this entry should be deleted.
+allow-git = [
+    "https://github.com/vaam-apps/vaam-image-webp",
+    # Fork of kornelski/avif-decode, carried only to build rav1d without its
+    # `asm` feature on x86_64 - see Cargo.toml. Also meant to be temporary:
+    # an upstream feature flag would let this go back to crates.io.
+    "https://github.com/vaam-apps/vaam-avif-decode",
+]

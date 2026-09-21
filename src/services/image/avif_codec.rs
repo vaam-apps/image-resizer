@@ -1,83 +1,39 @@
-//! AVIF encode/decode via `libavif` (raw `libavif-sys` FFI), #67/#68.
+//! AVIF encode/decode via pure-Rust codecs (C-dependency removal, #67/#68's
+//! `libavif-sys` FFI path replaced) - `ravif` for encode, `avif-decode` for
+//! decode. See `Cargo.toml`'s own comment on the `ravif`/`avif-decode`
+//! dependency block for why these two crates specifically (one per
+//! direction, rather than a single AVIF crate covering both - no such
+//! all-pure-Rust crate exists).
 //!
-//! # Why raw `libavif-sys` instead of the high-level `libavif` crate
+//! # `avif-parse` must become a *direct* dependency - this file will not
+//! compile without that `Cargo.toml` change
 //!
-//! crates.io has both a raw-bindings crate (`libavif-sys`) and a thin
-//! high-level wrapper on top of it (`libavif`, same repository/maintainer,
-//! `njaard/libavif-rs`). The high-level crate was evaluated first and
-//! rejected: its `Encoder` has no EXIF-write API at all (`AvifImage` has no
-//! `set_exif`/equivalent - only `avifImageSetMetadataExif` in the raw `sys`
-//! bindings), and its `RgbPixels`/`AvifImage` types don't expose the
-//! decoder's own `icc`/`exif` fields either. Since this crate needs both
-//! (matching every other codec path in `handler.rs`, which forwards EXIF
-//! through `encode_jpeg`/`PngEncoder::set_exif_metadata`/the old
-//! `AvifEncoder::set_exif_metadata`), the raw bindings are used directly -
-//! the same "hand-roll a thin wrapper when the higher-level crate doesn't
-//! cover what's needed" choice this codebase already made for JPEG
-//! (`mozjpeg`, not a JPEG-specific higher-level crate).
+//! `avif-decode`'s `Decoder` (its only public entry point) has no API that
+//! returns dimensions, or anything else, without first running the actual
+//! AV1 frame decode through `rav1d` (`avif-decode-3.0.0/src/lib.rs`'s
+//! `Decoder::to_image` is the only way to reach a width/height, and it
+//! unconditionally calls `Rav1dDecoder::decode_frame` first). That is
+//! exactly the expensive step `peek_dimensions` and `decode`'s pre-decode
+//! resolution guard both exist to avoid running on an oversized or
+//! adversarial input (see those functions' own doc comments).
 //!
-//! # Why `libavif-sys` over other AVIF crates evaluated
-//!
-//! `avif-rs` (crates.io, `vegidio/avif-rs`, "Encode and decode AVIF images
-//! with SVT-AV1 and dav1d, via statically-linked libavif") looked
-//! attractive on paper - SVT-AV1 support is exactly what this project's
-//! own survey wanted evaluated. It was rejected after reading its
-//! `build.rs`: at build time it downloads a prebuilt static-library
-//! archive from `https://github.com/vegidio/binaries-avif/releases`, a
-//! *different* GitHub account's own binary distribution channel, not built
-//! from source during `cargo build` and not distributed via crates.io. For
-//! a Docker build of an attacker-facing image-processing service, linking
-//! an opaque prebuilt `.a` from a third-party binary release channel -
-//! unauditable at build time, no corresponding source visible in the
-//! dependency tree `cargo deny`/`cargo audit` actually scan - is a real
-//! supply-chain regression versus every other native dependency this crate
-//! has (`mozjpeg-sys`/`libwebp-sys`/this module's own `libavif-sys` all
-//! compile their C source from the crate's own vendored tree via `cc`/
-//! `cmake`/`meson`). Not used.
-//!
-//! `libavif-sys` (`njaard/libavif-rs`) instead vendors libavif's actual C
-//! source (`libavif-sys-*/libavif/`, a full copy of the upstream tree) and
-//! builds it via `cmake` in its own `build.rs`, statically
-//! (`BUILD_SHARED_LIBS=0`, `cargo:rustc-link-lib=static=avif`) - real
-//! source-to-binary provenance, matching this project's other `-sys`
-//! dependencies.
-//!
-//! # Codec backend: AOM only, not AOM+SVT-AV1
-//!
-//! `libavif-sys`'s own `Cargo.toml` exposes exactly three codec features:
-//! `codec-aom` (AV1 encode+decode via `libaom-sys`, itself vendoring and
-//! building AOM 3.11.0 from source via `cmake`), `codec-dav1d` (AV1 decode
-//! only, via `libdav1d-sys`, vendoring and building dav1d from source via
-//! `meson`/`ninja`), and `codec-rav1e` (the same pure-Rust `rav1e` this
-//! change removes - see `Cargo.toml`'s own comment on the `image`
-//! dependency). There is no `codec-svt`/SVT-AV1 feature: libavif's C build
-//! system (`CMakeLists.txt`) does support an `AVIF_CODEC_SVT` option
-//! upstream, but `libavif-sys`'s `build.rs` never sets it and has no
-//! `libsvtav1-sys`-equivalent dependency to source SVT-AV1 from - wiring
-//! it in would mean forking/patching this crate's build script, not just
-//! adding a Cargo feature, which is out of scope here. Every other
-//! crates.io crate found in this search either wraps the same
-//! `libavif-sys` (so inherits the same limitation) or is the
-//! prebuilt-binary-download `avif-rs` rejected above (whose binaries *do*
-//! include `SvtAv1Enc`, per its own `build.rs`, but at the supply-chain
-//! cost documented above). **AOM is therefore the only AV1 encode backend
-//! wired in** (`codec-aom` + `codec-dav1d`, `codec-rav1e` left off -
-//! `libavif-sys = { default-features = false, features = ["codec-aom",
-//! "codec-dav1d"] }` in `Cargo.toml`). `avifEncoderCreate`'s default
-//! `codecChoice` is `AVIF_CODEC_CHOICE_AUTO`, which resolves to the one
-//! encode-capable codec actually compiled in (AOM) - no explicit codec
-//! selection is needed in this module for that reason, and the same is
-//! true for decode (`codec-dav1d` is the only decode-capable codec
-//! compiled in, so `AUTO` resolves to dav1d there too).
-//!
-//! One dependency covers both AVIF directions - decode (`codec-dav1d`,
-//! #67, the capability actually requested) and encode (`codec-aom`, #68,
-//! replacing `ravif`/`rav1e`) - rather than needing two.
-
+//! The only place dimensions are available *before* an AV1 frame decode is
+//! `avif_parse::AvifData::primary_item_metadata()` (parses just the AV1
+//! sequence header OBU, not a full frame decode) - `avif-parse` 2.1.0 is
+//! already in this workspace's `Cargo.lock` (pinned exactly by
+//! `avif-decode`'s own `Cargo.toml`, `avif-parse = "2.1.0"`), but only as a
+//! *transitive* dependency. Rust's 2018+ extern prelude only auto-resolves
+//! crates a package lists directly in its own `Cargo.toml`
+//! `[dependencies]` - so `use avif_parse::...` below fails to resolve
+//! (`error[E0433]`) until `avif-parse = "2"` is added there too. That
+//! addition cannot move the resolved version (already pinned at `2.1.0` by
+//! `avif-decode`), so it carries no version-resolution risk - it only
+//! promotes an already-locked transitive dependency to direct. This
+//! module's own scope is one file; the `Cargo.toml` edit is reported
+//! alongside this change rather than made here.
 use anyhow::{Context, Result};
-use image::metadata::Orientation;
 use image::DynamicImage;
-use libavif_sys as sys;
+use image::metadata::Orientation;
 
 /// AVIF-specific slice of the decode tuple every other decode path in
 /// `handler.rs` returns as `DecodedImage` (`(DynamicImage, Orientation,
@@ -85,165 +41,103 @@ use libavif_sys as sys;
 /// than importing that private type alias across the module boundary.
 pub type AvifDecoded = (DynamicImage, Orientation, Option<Vec<u8>>, Option<Vec<u8>>);
 
-/// Converts a non-`AVIF_RESULT_OK` `avifResult` into an `Err` carrying
-/// libavif's own human-readable message (`avifResultToString`) - every FFI
-/// call in this module that returns `avifResult` is checked through this,
-/// the same "translate the C-level error into a normal `Result`" role
-/// `.context(..)` plays for the `image`-crate/mozjpeg paths elsewhere in
-/// this file.
-fn ensure_avif_ok(result: sys::avifResult, what: &str) -> Result<()> {
-    if result == sys::AVIF_RESULT_OK {
-        return Ok(());
-    }
-    let msg = unsafe {
-        let ptr = sys::avifResultToString(result);
-        if ptr.is_null() {
-            "unknown".to_string()
-        } else {
-            std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
-        }
-    };
-    anyhow::bail!("libavif: {what} failed: {msg} (code {result})")
-}
-
-/// RAII guard around `*mut avifDecoder`. `avifDecoderDestroy` also frees
-/// `decoder->image`/internal buffers - nothing else in this module holds a
-/// pointer derived from the decoder past this guard's own scope, since
-/// every function below copies pixel/exif/icc data into owned `Vec<u8>`s
-/// before returning.
-struct AvifDecoderGuard(*mut sys::avifDecoder);
-
-impl AvifDecoderGuard {
-    fn create() -> Result<Self> {
-        let ptr = unsafe { sys::avifDecoderCreate() };
-        anyhow::ensure!(!ptr.is_null(), "libavif: avifDecoderCreate returned null");
-        Ok(Self(ptr))
-    }
-}
-
-impl Drop for AvifDecoderGuard {
-    fn drop(&mut self) {
-        unsafe { sys::avifDecoderDestroy(self.0) }
-    }
-}
-
-/// RAII guard around `*mut avifImage`.
-struct AvifImageGuard(*mut sys::avifImage);
-
-impl AvifImageGuard {
-    fn create(width: u32, height: u32, depth: u32, yuv_format: sys::avifPixelFormat) -> Result<Self> {
-        let ptr = unsafe { sys::avifImageCreate(width, height, depth, yuv_format) };
-        anyhow::ensure!(!ptr.is_null(), "libavif: avifImageCreate returned null");
-        Ok(Self(ptr))
-    }
-}
-
-impl Drop for AvifImageGuard {
-    fn drop(&mut self) {
-        unsafe { sys::avifImageDestroy(self.0) }
-    }
-}
-
-/// RAII guard around `*mut avifEncoder`.
-struct AvifEncoderGuard(*mut sys::avifEncoder);
-
-impl AvifEncoderGuard {
-    fn create() -> Result<Self> {
-        let ptr = unsafe { sys::avifEncoderCreate() };
-        anyhow::ensure!(!ptr.is_null(), "libavif: avifEncoderCreate returned null");
-        Ok(Self(ptr))
-    }
-}
-
-impl Drop for AvifEncoderGuard {
-    fn drop(&mut self) {
-        unsafe { sys::avifEncoderDestroy(self.0) }
-    }
-}
-
-/// RAII guard around an owned `avifRGBImage` whose `pixels` buffer was
-/// allocated by libavif itself (`avifRGBImageAllocatePixels`) - as opposed
-/// to `encode_avif_inner`'s use of `avifRGBImage`, which points `pixels` at
-/// a Rust-owned buffer it never asks libavif to allocate or free.
-struct AvifRgbGuard(sys::avifRGBImage);
-
-impl Drop for AvifRgbGuard {
-    fn drop(&mut self) {
-        unsafe { sys::avifRGBImageFreePixels(&mut self.0) }
-    }
-}
-
-/// Detects an AVIF source by its ISOBMFF `ftyp` box via libavif's own
-/// `avifPeekCompatibleFileType` - kept here (rather than duplicating the
-/// box-walking logic `handler.rs::is_avif` does independently as a pure
-/// magic-byte check with no FFI) only as the ground truth this module's
-/// own tests check that hand-rolled check against; `handler.rs`'s
-/// `detect_format_from_bytes` uses its own `is_avif` so that function
-/// doesn't need to link against `libavif-sys` just to sniff a format tag.
+/// Detects an AVIF source via `avif_parse::read_avif` succeeding - the
+/// closest available "ground truth" now that libavif's own
+/// `avifPeekCompatibleFileType` (what this test used pre-#67/#68) is gone
+/// with `libavif-sys`. Unlike that old peek (a pure `ftyp`-brand check, no
+/// deeper parse), `read_avif` fully parses the container - meta box, item
+/// properties, item locations - so this is now a stricter "is this a
+/// complete, well-formed still AVIF" check rather than a magic-byte sniff.
+/// That's still a meaningful independent cross-check for
+/// `handler.rs::ImageService::is_avif`'s hand-rolled magic-byte check (kept
+/// FFI/parse-free there so `detect_format_from_bytes` doesn't need to link
+/// an AVIF parser just to sniff a format tag - see that function's own doc
+/// comment): the two now disagree on truncated/corrupt-but-`ftyp`-tagged
+/// input where they used to agree, which is a known, accepted narrowing of
+/// what this test proves, not a bug.
 #[cfg(test)]
 pub(crate) fn is_avif(bytes: &[u8]) -> bool {
-    let raw = sys::avifROData {
-        data: bytes.as_ptr(),
-        size: bytes.len(),
-    };
-    unsafe { sys::avifPeekCompatibleFileType(&raw) == sys::AVIF_TRUE as sys::avifBool }
+    avif_parse::read_avif(&mut &bytes[..]).is_ok()
 }
 
-/// Reads only the AVIF container header (`avifDecoderParse`) to get the
-/// image's dimensions, without decoding any AV1-coded pixel payload -
-/// AVIF's equivalent of `ImageReader::into_dimensions()`, which can't
-/// parse AVIF at all without the `avif-native` feature this crate doesn't
-/// enable (see this module's own doc comment). Called from
+/// Reads only the AVIF container header and AV1 sequence-header OBU
+/// (`avif_parse::read_avif` + `AvifData::primary_item_metadata`) to get the
+/// image's dimensions, without running the AV1 frame decode - AVIF's
+/// equivalent of `ImageReader::into_dimensions()`, which can't parse AVIF
+/// at all without the `avif-native` feature this crate doesn't enable (see
+/// `Cargo.toml`'s `image` dependency comment). Called from
 /// `ImageService::peek_dimensions` *before* `check_source_resolution` and
 /// any pixel decode, exactly like every other format's header peek.
+///
+/// **Not as cheap as the old libavif-backed peek.** `avif_parse::read_avif`
+/// copies the primary item's *coded* AV1 payload bytes into memory as part
+/// of parsing (there is no API to stop at box-structure-only) - the old
+/// `avifDecoderParse` call this replaces did not need to. That copy is
+/// still bounded by the attacker-controlled input's own byte length (no
+/// amplification: the caller already sent every one of those bytes over
+/// the wire) and, critically, never invokes the AV1 decoder itself
+/// (`rav1d`) - the expensive, potentially-bomb-amplifying step stays
+/// exactly where it was, in `decode`, after the resolution check. So this
+/// is a real but bounded cost increase (a memcpy of up to the request's own
+/// byte size), not the "full decode" DoS regression this function's own
+/// contract warns against - see this module's own doc comment for why
+/// `avif_parse` (rather than `avif-decode`'s own `Decoder`) is what makes
+/// this possible at all.
 pub fn peek_dimensions(image_bytes: &[u8]) -> Result<(u32, u32)> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         peek_dimensions_inner(image_bytes)
     }))
-    .unwrap_or_else(|payload| Err(panic_to_error(payload, "libavif header parse")))
+    .unwrap_or_else(|payload| Err(panic_to_error(payload, "avif-parse header parse")))
 }
 
 fn peek_dimensions_inner(image_bytes: &[u8]) -> Result<(u32, u32)> {
-    let decoder = AvifDecoderGuard::create()?;
-    unsafe {
-        let res = sys::avifDecoderSetIOMemory(decoder.0, image_bytes.as_ptr(), image_bytes.len());
-        ensure_avif_ok(res, "avifDecoderSetIOMemory")?;
-
-        let res = sys::avifDecoderParse(decoder.0);
-        ensure_avif_ok(res, "avifDecoderParse")?;
-
-        let image = (*decoder.0).image;
-        anyhow::ensure!(!image.is_null(), "libavif: parsed decoder has no image");
-        Ok(((*image).width, (*image).height))
-    }
+    let avif = avif_parse::read_avif(&mut &image_bytes[..])
+        .context("avif-parse: failed to parse AVIF container")?;
+    let meta = avif
+        .primary_item_metadata()
+        .context("avif-parse: failed to parse AV1 sequence header")?;
+    Ok((meta.max_frame_width.get(), meta.max_frame_height.get()))
 }
 
-/// Decodes an AVIF source, enforcing the same resolution guards every
-/// other format's decode path does (#67):
-/// - `imageDimensionLimit`/`imageSizeLimit` are set on the `avifDecoder`
-///   itself *before* `avifDecoderParse`, so libavif rejects an
-///   oversized-by-header source at parse time - libavif's own equivalent
-///   of `build_decode_limits`'s defense-in-depth role for the `image`
-///   crate paths.
-/// - `check_source_resolution` is re-run against the parsed header
-///   dimensions immediately after `avifDecoderParse` and *before*
-///   `avifDecoderNextImage` (the call that actually decodes the AV1
-///   payload) - this is what makes an AVIF decompression bomb fail the
-///   same way a JPEG/PNG/WebP one does: rejected from a cheap header read,
-///   never reaching the expensive pixel decode. The *primary* guard
+/// Decodes an AVIF source, enforcing the same resolution guard every other
+/// format's decode path does (#67):
+/// - The container and AV1 sequence header are parsed first via
+///   `avif_parse::read_avif`/`primary_item_metadata` (the same cheap,
+///   frame-decode-free path `peek_dimensions` uses - see that function's
+///   own doc comment on what "cheap" means here).
+/// - `check_source_resolution` runs against those header-parsed dimensions
+///   *before* `avif_decode::Decoder::to_image` - the call that actually
+///   runs the AV1 frame decode through `rav1d` - is ever reached. This is
+///   what makes an AVIF decompression bomb fail the same way a
+///   JPEG/PNG/WebP one does: rejected from a cheap header read, never
+///   reaching the expensive pixel decode. The *primary* guard
 ///   (`ImageService::peek_dimensions` -> `check_source_resolution`, run by
 ///   the caller before `decode_with_limits`/this function is ever reached)
 ///   already covers this - the check here is defense in depth, matching
 ///   every other decode path's "primary check upstream, guard repeated at
 ///   the point of actual decode" structure.
 ///
+/// The container ends up parsed twice - once here via `avif_parse`
+/// directly for the guard, once more inside `avif_decode::Decoder::from_avif`
+/// for the actual decode - because `avif_decode::Decoder`'s fields are
+/// private with no constructor from an already-parsed `AvifData` (see this
+/// module's own doc comment). Both parses are the same cheap,
+/// frame-decode-free step; only one AV1 frame decode ever runs, and only
+/// after the guard passes, so the duplication doesn't weaken it.
+///
+/// No equivalent of the old `imageCountLimit = 1` (animated-AVIF guard) is
+/// needed: `avif_parse::read_avif` rejects the animated-AVIF `ftyp` brand
+/// (`"avis"`) outright with `Error::Unsupported` before returning anything
+/// - still images are the only thing that can ever reach this function's
+/// decode step, structurally, not by a limit this module sets.
+///
 /// # Panics (caught, not propagated)
 ///
-/// The whole FFI sequence (`avifDecoderParse` through `avifImageYUVToRGB`)
-/// runs inside one `catch_unwind`, same defensive spirit as
-/// `mozjpeg_decode`/`libwebp_decode` in `handler.rs`: nothing in
-/// `libavif-sys`'s raw bindings is expected to panic on malformed input,
-/// but `Cargo.toml`'s `panic = "unwind"` (kept for #29, decoding untrusted
+/// The whole sequence (container parse through pixel conversion) runs
+/// inside one `catch_unwind`, same defensive spirit as
+/// `mozjpeg_decode`/`libwebp_decode` in `handler.rs`: neither `avif-parse`
+/// nor `avif-decode`/`rav1d` is expected to panic on malformed input, but
+/// `Cargo.toml`'s `panic = "unwind"` (kept for #29, decoding untrusted
 /// input) is what makes any unexpected panic here catchable rather than
 /// fatal to the whole worker thread, and this function is reached with
 /// attacker-supplied bytes on every AVIF-source request.
@@ -251,170 +145,164 @@ pub fn decode(image_bytes: &[u8], max_src_resolution_mp: u64) -> Result<AvifDeco
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         decode_inner(image_bytes, max_src_resolution_mp)
     }))
-    .unwrap_or_else(|payload| Err(panic_to_error(payload, "libavif decode")))
+    .unwrap_or_else(|payload| Err(panic_to_error(payload, "avif-decode decode")))
 }
 
 fn decode_inner(image_bytes: &[u8], max_src_resolution_mp: u64) -> Result<AvifDecoded> {
-    let decoder = AvifDecoderGuard::create()?;
-    unsafe {
-        (*decoder.0).imageDimensionLimit = 65_535;
-        let max_pixels = max_src_resolution_mp
-            .saturating_mul(1_000_000)
-            .min(u64::from(u32::MAX));
-        (*decoder.0).imageSizeLimit = max_pixels as u32;
-        // Still images only - every other decode path in this crate treats
-        // AVIF as non-animatable (only Gif/Webp are, see
-        // `decode_animation_source`'s doc comment), so a limit of 1 keeps a
-        // multi-image AVIF sequence from being parsed any further than its
-        // first frame, mirroring `collect_frames_capped`'s bomb-guard spirit
-        // for the one format that actually is treated as animatable.
-        (*decoder.0).imageCountLimit = 1;
+    let avif = avif_parse::read_avif(&mut &image_bytes[..])
+        .context("avif-parse: failed to parse AVIF container")?;
+    let meta = avif
+        .primary_item_metadata()
+        .context("avif-parse: failed to parse AV1 sequence header")?;
+    let (width, height) = (meta.max_frame_width.get(), meta.max_frame_height.get());
 
-        let res = sys::avifDecoderSetIOMemory(decoder.0, image_bytes.as_ptr(), image_bytes.len());
-        ensure_avif_ok(res, "avifDecoderSetIOMemory")?;
+    // Defense in depth - see this function's own doc comment; the primary
+    // check already ran in `ImageService::peek_dimensions` against these
+    // same header-parsed dimensions.
+    crate::services::image::handler::ImageService::check_source_resolution(
+        width,
+        height,
+        max_src_resolution_mp,
+    )?;
 
-        let res = sys::avifDecoderParse(decoder.0);
-        ensure_avif_ok(res, "avifDecoderParse")?;
+    // The expensive step: runs the AV1 frame decode through `rav1d`, only
+    // now that the resolution guard above has passed. `avif-decode` already
+    // performs YUV->RGB conversion (chroma upsampling for 4:2:0/4:2:2, or a
+    // pass-through for 4:4:4/monochrome) and bit-depth normalisation to a
+    // full 8-bit or full 16-bit range internally (see
+    // `avif-decode-3.0.0/src/image.rs`'s `yuv_to_rgb8`/`yuv_to_rgb16`/
+    // `luma16`) - unlike the old libavif path, which had to call
+    // `avifImageYUVToRGB` itself. `avif_image_to_dynamic` below only needs
+    // to reshape the already-converted pixels into a `DynamicImage`.
+    let decoded = avif_decode::Decoder::from_avif(image_bytes)
+        .context("avif-decode: failed to parse AVIF container")?
+        .to_image()
+        .context("avif-decode: failed to decode AV1 frame")?;
 
-        let image_ptr = (*decoder.0).image;
-        anyhow::ensure!(!image_ptr.is_null(), "libavif: parsed decoder has no image");
-        let (width, height) = ((*image_ptr).width, (*image_ptr).height);
+    let dynamic_image = avif_image_to_dynamic(decoded)?;
 
-        // Defense in depth - see this function's own doc comment; the
-        // primary check already ran in `ImageService::peek_dimensions`
-        // against these same header-parsed dimensions.
-        crate::services::image::handler::ImageService::check_source_resolution(
-            width,
-            height,
-            max_src_resolution_mp,
-        )?;
+    // Orientation (`irot`/`imir`) and both metadata kinds (ICC `colr`, EXIF
+    // `Exif` item) are unrecoverable on this path - not a choice made in
+    // this module, a hard capability gap in `avif-parse` 2.1.0 itself.
+    // Its `AvifData` (`avif-parse-2.1.0/src/lib.rs`) carries only
+    // `primary_item`, `alpha_item`, `premultiplied_alpha`,
+    // `content_light_level` and `mastering_display` - no ICC/EXIF/transform
+    // fields exist to populate. Its internal `ItemProperty` enum
+    // (`avif-parse-2.1.0/src/lib.rs:1091`) has variants for exactly
+    // `Channels`/`AuxiliaryType`/`ContentLightLevel`/
+    // `MasteringDisplayColourVolume`, plus a catch-all `Unsupported` that
+    // silently swallows every other item property box - including `colr`
+    // (ICC), `irot`, and `imir`. The `Exif`-typed item itself (a separate
+    // `infe`/`iloc` item referenced via an `'cdsc'` item reference, not a
+    // property at all) is never looked at either. This is a real,
+    // reportable behaviour change from the old libavif path (which read
+    // `image->icc`/`image->exif` and inverted `image->transformFlags`/
+    // `irot`/`imir` via `avif_orientation`, both removed with this change):
+    // a decoded AVIF's orientation is always treated as already-correct
+    // (`Orientation::NoTransforms`, the same "malformed/absent metadata
+    // isn't worth failing the whole request over" default every other
+    // format in `handler.rs` falls back to), and its ICC/EXIF are always
+    // `None`, even when the source file actually embeds them. Note this is
+    // asymmetric with `encode` (below), whose `ravif::Encoder::with_exif`
+    // *does* write a real EXIF item - AVIFs this service produces itself
+    // and later re-decodes will still lose that EXIF on the way back in.
+    Ok((dynamic_image, Orientation::NoTransforms, None, None))
+}
 
-        let res = sys::avifDecoderNextImage(decoder.0);
-        ensure_avif_ok(res, "avifDecoderNextImage")?;
+/// Converts `avif-decode`'s already YUV->RGB-converted, bit-depth-normalised
+/// `Image` into this crate's `DynamicImage` - see `decode_inner`'s own
+/// comment on what `avif-decode` already handled before this point.
+///
+/// Unlike the old libavif path, which always converted through
+/// `AVIF_RGB_FORMAT_RGBA` and so always returned
+/// `DynamicImage::ImageRgba8` regardless of the source, this preserves the
+/// source's actual channel count and bit depth: an AVIF with no alpha item
+/// decodes to `ImageRgb8`/`ImageRgb16`, a monochrome one to
+/// `ImageLuma8`/`ImageLuma16`. A real, reportable change in what variant
+/// callers get back - not obviously wrong (it stops fabricating an alpha
+/// channel or widening 8-bit sources that don't need it), but different
+/// from before, so calling out explicitly.
+///
+/// Each arm manually copies each pixel's components into a flat buffer
+/// (rather than a zero-copy reinterpret cast) because `rgb`'s own
+/// byte-casting trait (`ComponentBytes`) is deprecated upstream in favour
+/// of `bytemuck::cast_slice`, and `bytemuck` isn't a dependency here - a
+/// plain, safe per-pixel copy avoids both, matching this module's existing
+/// preference for explicit, auditable copies over unsafe reinterpret casts
+/// (the same choice the old `decode_inner`'s manual row-copy loop made).
+fn avif_image_to_dynamic(image: avif_decode::Image) -> Result<DynamicImage> {
+    fn dims(width: usize, height: usize) -> Result<(u32, u32)> {
+        Ok((
+            u32::try_from(width).context("avif-decode: image width does not fit in u32")?,
+            u32::try_from(height).context("avif-decode: image height does not fit in u32")?,
+        ))
+    }
 
-        // Re-read: `avifDecoderNextImage` can reallocate `decoder->image`.
-        let image_ptr = (*decoder.0).image;
-        anyhow::ensure!(!image_ptr.is_null(), "libavif: decoded decoder has no image");
-
-        let orientation = avif_orientation(
-            (*image_ptr).transformFlags,
-            (*image_ptr).irot.angle,
-            (*image_ptr).imir.axis,
-        );
-
-        let icc_profile = avif_rw_data_to_vec(&(*image_ptr).icc);
-        let exif_metadata = avif_rw_data_to_vec(&(*image_ptr).exif);
-
-        let mut rgb_guard = AvifRgbGuard(std::mem::zeroed());
-        sys::avifRGBImageSetDefaults(&mut rgb_guard.0, image_ptr);
-        rgb_guard.0.format = sys::AVIF_RGB_FORMAT_RGBA;
-        rgb_guard.0.depth = 8;
-
-        let res = sys::avifRGBImageAllocatePixels(&mut rgb_guard.0);
-        ensure_avif_ok(res, "avifRGBImageAllocatePixels")?;
-
-        let res = sys::avifImageYUVToRGB(image_ptr, &mut rgb_guard.0);
-        ensure_avif_ok(res, "avifImageYUVToRGB")?;
-
-        let expected_row_bytes = (width as usize)
-            .checked_mul(4)
-            .context("libavif: row byte count overflow")?;
-        let row_bytes = rgb_guard.0.rowBytes as usize;
-        anyhow::ensure!(
-            row_bytes >= expected_row_bytes,
-            "libavif: decoded row stride ({row_bytes}) shorter than expected ({expected_row_bytes})"
-        );
-
-        let mut pixels = vec![
-            0u8;
-            expected_row_bytes
-                .checked_mul(height as usize)
-                .context("libavif: decoded buffer size overflow")?
-        ];
-        for y in 0..height as usize {
-            let src = std::slice::from_raw_parts(rgb_guard.0.pixels.add(y * row_bytes), expected_row_bytes);
-            pixels[y * expected_row_bytes..(y + 1) * expected_row_bytes].copy_from_slice(src);
+    match image {
+        avif_decode::Image::Rgba8(pixels) => {
+            let (buf, width, height) = pixels.into_contiguous_buf();
+            let (width, height) = dims(width, height)?;
+            let mut bytes = Vec::with_capacity(buf.len() * 4);
+            for px in buf {
+                bytes.extend_from_slice(&[px.r, px.g, px.b, px.a]);
+            }
+            let img = image::RgbaImage::from_raw(width, height, bytes)
+                .context("avif-decode: decoded RGBA8 buffer size mismatch")?;
+            Ok(DynamicImage::ImageRgba8(img))
         }
-
-        let buf = image::RgbaImage::from_raw(width, height, pixels)
-            .context("libavif: decoded RGBA buffer size mismatch")?;
-
-        Ok((DynamicImage::ImageRgba8(buf), orientation, icc_profile, exif_metadata))
+        avif_decode::Image::Rgb8(pixels) => {
+            let (buf, width, height) = pixels.into_contiguous_buf();
+            let (width, height) = dims(width, height)?;
+            let mut bytes = Vec::with_capacity(buf.len() * 3);
+            for px in buf {
+                bytes.extend_from_slice(&[px.r, px.g, px.b]);
+            }
+            let img = image::RgbImage::from_raw(width, height, bytes)
+                .context("avif-decode: decoded RGB8 buffer size mismatch")?;
+            Ok(DynamicImage::ImageRgb8(img))
+        }
+        avif_decode::Image::Gray8(pixels) => {
+            let (buf, width, height) = pixels.into_contiguous_buf();
+            let (width, height) = dims(width, height)?;
+            let bytes: Vec<u8> = buf.into_iter().map(rgb::Gray::value).collect();
+            let img = image::GrayImage::from_raw(width, height, bytes)
+                .context("avif-decode: decoded Gray8 buffer size mismatch")?;
+            Ok(DynamicImage::ImageLuma8(img))
+        }
+        avif_decode::Image::Rgba16(pixels) => {
+            let (buf, width, height) = pixels.into_contiguous_buf();
+            let (width, height) = dims(width, height)?;
+            let mut words = Vec::with_capacity(buf.len() * 4);
+            for px in buf {
+                words.extend_from_slice(&[px.r, px.g, px.b, px.a]);
+            }
+            let img: image::ImageBuffer<image::Rgba<u16>, Vec<u16>> =
+                image::ImageBuffer::from_raw(width, height, words)
+                    .context("avif-decode: decoded RGBA16 buffer size mismatch")?;
+            Ok(DynamicImage::ImageRgba16(img))
+        }
+        avif_decode::Image::Rgb16(pixels) => {
+            let (buf, width, height) = pixels.into_contiguous_buf();
+            let (width, height) = dims(width, height)?;
+            let mut words = Vec::with_capacity(buf.len() * 3);
+            for px in buf {
+                words.extend_from_slice(&[px.r, px.g, px.b]);
+            }
+            let img: image::ImageBuffer<image::Rgb<u16>, Vec<u16>> =
+                image::ImageBuffer::from_raw(width, height, words)
+                    .context("avif-decode: decoded RGB16 buffer size mismatch")?;
+            Ok(DynamicImage::ImageRgb16(img))
+        }
+        avif_decode::Image::Gray16(pixels) => {
+            let (buf, width, height) = pixels.into_contiguous_buf();
+            let (width, height) = dims(width, height)?;
+            let words: Vec<u16> = buf.into_iter().map(rgb::Gray::value).collect();
+            let img: image::ImageBuffer<image::Luma<u16>, Vec<u16>> =
+                image::ImageBuffer::from_raw(width, height, words)
+                    .context("avif-decode: decoded Gray16 buffer size mismatch")?;
+            Ok(DynamicImage::ImageLuma16(img))
+        }
     }
-}
-
-/// Copies an `avifRWData` (used for both `avifImage.icc` and
-/// `avifImage.exif`) into an owned `Vec<u8>`, or `None` if empty - mirrors
-/// the `.ok().flatten()` "nothing to forward" convention every other
-/// decode path in `handler.rs` uses for `icc_profile`/`exif_metadata`.
-///
-/// # Safety
-/// `data` must point to at least `size` initialized bytes, or be null/zero
-/// (in which case nothing is read) - true for any `avifRWData` still owned
-/// by a live `avifImage`, which is the only way this is ever called.
-unsafe fn avif_rw_data_to_vec(data: &sys::avifRWData) -> Option<Vec<u8>> {
-    if data.size == 0 || data.data.is_null() {
-        None
-    } else {
-        Some(unsafe { std::slice::from_raw_parts(data.data, data.size) }.to_vec())
-    }
-}
-
-/// Maps AVIF's `irot`/`imir` transform boxes to this crate's EXIF-shaped
-/// `Orientation` enum, so a decoded AVIF's transform flows through the
-/// exact same `params.autorotate`-gated `img.apply_orientation(orientation)`
-/// call in `handler.rs` that every EXIF-oriented JPEG/PNG source already
-/// uses, instead of a second, parallel "apply the transform" code path.
-///
-/// The (`irot.angle`, `imir.axis`) -> EXIF-orientation-number table below
-/// is not derived independently - it's the *exact inverse* of libavif's
-/// own `avifImageExtractExifOrientationToIrotImir`
-/// (`libavif-sys-*/libavif/src/exif.c`), which converts an EXIF
-/// orientation tag (1-8) to `irot`/`imir` for encoding. Reading that
-/// function directly (rather than re-deriving the HEIF/MIAF transform-order
-/// spec by hand) is what pins down the one detail otherwise easy to get
-/// backwards: when both `irot` and `imir` are present (EXIF 5 and 7 only),
-/// libavif's own comment states `irot` is "applied before imir according
-/// to MIAF spec ISO/IEC 28002-12:2021 - section 7.3.6.7" - i.e. rotate
-/// first, then mirror, for encoding; this function only needs to
-/// recognise which EXIF orientation a given (angle, axis, flags) triple
-/// came from, not re-apply the transform order itself, since
-/// `DynamicImage::apply_orientation` already implements the *decode*-side
-/// (correcting) transform for whichever `Orientation` variant is returned.
-///
-/// A `(transform_flags, angle, axis)` combination outside all eight
-/// canonical cases (possible only from a hand-crafted or non-libavif-
-/// authored AVIF, never from anything libavif itself writes) falls back to
-/// `Orientation::NoTransforms`, the same "malformed metadata isn't worth
-/// failing the whole request over" default `decoder.orientation()
-///     .unwrap_or(Orientation::NoTransforms)` already uses for every other
-/// format in `handler.rs`.
-fn avif_orientation(transform_flags: sys::avifTransformFlags, angle: u8, axis: u8) -> Orientation {
-    const IROT: sys::avifTransformFlags = 1 << 2; // AVIF_TRANSFORM_IROT
-    const IMIR: sys::avifTransformFlags = 1 << 3; // AVIF_TRANSFORM_IMIR
-
-    let effective_angle = if transform_flags & IROT != 0 { angle } else { 0 };
-    let effective_mirror = if transform_flags & IMIR != 0 {
-        Some(axis)
-    } else {
-        None
-    };
-
-    let exif_orientation = match (effective_angle, effective_mirror) {
-        (0, None) => 1,
-        (0, Some(1)) => 2,
-        (2, None) => 3,
-        (0, Some(0)) => 4,
-        (1, Some(0)) => 5,
-        (3, None) => 6,
-        (3, Some(0)) => 7,
-        (1, None) => 8,
-        // Not producible by libavif's own encoder-side conversion - see
-        // this function's own doc comment.
-        _ => 1,
-    };
-
-    Orientation::from_exif(exif_orientation).unwrap_or(Orientation::NoTransforms)
 }
 
 fn panic_to_error(payload: Box<dyn std::any::Any + Send>, what: &str) -> anyhow::Error {
@@ -426,53 +314,93 @@ fn panic_to_error(payload: Box<dyn std::any::Any + Send>, what: &str) -> anyhow:
     anyhow::anyhow!("{what} panicked: {msg}")
 }
 
-/// Encodes `img` to AVIF via `libavif`+AOM (#68), replacing the pure-Rust
-/// `ravif`/`rav1e` encoder `image::codecs::avif::AvifEncoder` used before
-/// this change - see this module's own doc comment for why AOM is the only
-/// backend wired in, and `handler.rs`'s `ImageFormat::Avif` match arm for
-/// how this replaces the old `AvifEncoder::new_with_speed_quality` call.
+/// Encodes `img` to AVIF via `ravif`/`rav1e` (#68), replacing the
+/// `libavif`+AOM encoder this crate used between #68 and this change - see
+/// this module's own doc comment and `Cargo.toml`'s dependency comment for
+/// why. `ravif`/`rav1e` is not a new choice for this crate: it's the same
+/// encoder `adr/0004-avif-measurement.md` originally measured, before #67/
+/// #68 swapped to libavif/AOM; this change reverts that swap on the encode
+/// side specifically to shed the C toolchain, not because AOM's output was
+/// found lacking.
 ///
-/// `quality`/`speed` map directly onto `avifEncoder`'s own `quality`
-/// (0-100, 100 = lossless) and `speed` (0-10, 10 = fastest) fields - the
-/// same *numeric ranges* `ravif`'s equivalent knobs used
-/// (`AvifEncoder::new_with_speed_quality`'s own `speed`/`quality`
-/// parameters), but **not the same scale**: AOM's `speed` (it drives
-/// AOM's `cpu-used` internally) is calibrated completely differently from
-/// rav1e's - see `DEFAULT_AVIF_SPEED`'s own doc comment in `handler.rs`
-/// for the real measurement that found the old default (`4`) cost 900ms+
-/// median per encode on AOM for no real benefit over a much faster
-/// setting, and re-derived the value this crate now ships. `quality`
-/// wasn't found to need the same kind of change, but is not guaranteed to
-/// mean the same perceptual quality at a given number either - see that
-/// same doc comment.
+/// # `quality`/`speed`: same public 0-100/0-10 numeric ranges, **not the
+/// same scale** - translation is a pass-through, not a conversion
 ///
-/// Alpha quality is set equal to `quality` - this crate's request surface
-/// has no separate alpha-quality knob, same as before this change.
+/// This function's public signature is unchanged: `quality` and `speed`
+/// stay on the 0-100 / 0-10 scales `handler.rs`'s `DEFAULT_AVIF_QUALITY`/
+/// `DEFAULT_AVIF_SPEED` and the `q:`/request-option surface already use.
+/// Internally:
+/// - `quality` (`u8`, 0-100) is passed as `f32` straight into
+///   `ravif::Encoder::with_quality`, clamped to `1.0..=100.0` (`with_quality`
+///   panics outside that range - `1..=100`, not `0..=100`, so an input of
+///   `0` is floored to `1`, not translated).
+/// - `speed` (`u8`, 0-10) is passed straight into `Encoder::with_speed`,
+///   clamped to `1..=10` (same reason - `with_speed` panics on `0`).
 ///
-/// `exif_metadata` (#5) is written via `avifImageSetMetadataExif` -
-/// libavif's real EXIF-write API, matching what the old
-/// `AvifEncoder::set_exif_metadata` provided. ICC is intentionally not
-/// threaded through here, preserving this crate's pre-existing AVIF
-/// behaviour (see `encode_single_image`'s own ICC comment in
-/// `handler.rs`) - `avifImageSetProfileICC` exists and could carry it in a
-/// future change, but that's new scope this change doesn't take on.
+/// **No numeric conversion is applied beyond that floor-clamp**, and that
+/// is a deliberate choice, not an oversight: `adr/0005-avif-measurement-
+/// libavif-mozjpeg.md` measured that AOM's and rav1e's quality scales are
+/// calibrated *differently enough to reverse sign* at the same nominal
+/// number - at quality 75, rav1e's DSSIM was **1.81x worse** than mozjpeg's
+/// at matched nominal quality (`adr/0004-avif-measurement.md`, the figure
+/// ADR 0005 reproduces as void-but-informative), while AOM's was **0.63x**
+/// (better) at that same nominal number (`adr/0005`, "The nominal-quality
+/// trap got worse, and reversed sign"). There is no published, measured
+/// formula this module can apply to correct for that gap - inventing one
+/// would be exactly the "naive same-nominal-quality" comparison both ADRs
+/// warn is meaningless. So the number is passed through honestly instead:
+/// `DEFAULT_AVIF_QUALITY`/`DEFAULT_AVIF_SPEED` (`handler.rs`) were
+/// calibrated for AOM and are now, again, being handed to rav1e verbatim -
+/// **`TODO(re-measure)`**: re-run an ADR-0005-style DSSIM/size/time sweep
+/// against this `ravif`-backed encoder specifically (as ADR 0004 originally
+/// did, before #67/#68) and re-derive both constants' values from that, not
+/// from this comment's numbers.
+///
+/// # Chroma: 4:4:4, not 4:2:0 - a real output-bytes change
+///
+/// `ravif::ColorModel`'s own doc comment states this library "always uses
+/// full-resolution color (4:4:4)" - there is no subsampling knob. The old
+/// AOM path encoded 4:2:0 (`avif_codec.rs`'s prior `AVIF_PIXEL_FORMAT_
+/// YUV420`, libavif/`avifenc`'s own default for lossy photographic
+/// content). 4:4:4 is real signal (no chroma information is discarded) at
+/// a real file-size cost versus 4:2:0 for the same nominal quality - a
+/// second, independent reason `quality`'s meaning has moved, on top of the
+/// scale-calibration gap above.
+///
+/// Alpha quality is set equal to `quality`, matching the old behaviour -
+/// this crate's request surface has no separate alpha-quality knob.
+///
+/// # EXIF (#5): written, not a no-op - unlike decode (see `decode_inner`)
+///
+/// `ravif::Encoder::with_exif` **is** a real EXIF-write API (`exif_slice`
+/// is "Embedded into AVIF file as-is", dropped into the MPEG `infe` box per
+/// its own doc comment) - so, unlike decode's capability loss, encode-side
+/// EXIF survives this swap intact, matching what the old
+/// `avifImageSetMetadataExif` call provided. ICC remains intentionally not
+/// threaded through here, same as before this change (see
+/// `encode_single_image`'s own ICC comment in `handler.rs`) -
+/// `avif-serialize` (which `ravif` writes through) does have an ICC-profile
+/// slot, and could carry it in a future change, but that's new scope this
+/// change doesn't take on.
 ///
 /// `pub` (matching `encode_webp`/`encode_jpeg` in `handler.rs`) so
 /// `benches/encode.rs` can benchmark the exact path production uses.
-pub fn encode(img: &DynamicImage, quality: u8, speed: u8, exif_metadata: Option<&[u8]>) -> Result<Vec<u8>> {
-    let has_alpha = img.color().has_alpha();
+pub fn encode(
+    img: &DynamicImage,
+    quality: u8,
+    speed: u8,
+    exif_metadata: Option<&[u8]>,
+) -> Result<Vec<u8>> {
     let rgba = img.to_rgba8();
-    let exif_owned = exif_metadata.map(<[u8]>::to_vec);
 
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        encode_inner(&rgba, has_alpha, quality, speed, exif_owned.as_deref())
+        encode_inner(&rgba, quality, speed, exif_metadata)
     }))
-    .unwrap_or_else(|payload| Err(panic_to_error(payload, "libavif encode")))
+    .unwrap_or_else(|payload| Err(panic_to_error(payload, "ravif encode")))
 }
 
 fn encode_inner(
     rgba: &image::RgbaImage,
-    has_alpha: bool,
     quality: u8,
     speed: u8,
     exif_metadata: Option<&[u8]>,
@@ -480,59 +408,36 @@ fn encode_inner(
     let (width, height) = rgba.dimensions();
     anyhow::ensure!(
         width > 0 && height > 0,
-        "libavif: cannot encode a zero-sized image"
+        "ravif: cannot encode a zero-sized image"
     );
 
-    // 4:2:0 - libavif/`avifenc`'s own default chroma subsampling for
-    // lossy photographic content, and what most AVIF encoders (including
-    // the reference `avifenc` CLI this crate's `DEFAULT_AVIF_QUALITY` doc
-    // comment already cites) use unless told otherwise. This is a real,
-    // reportable output-bytes change versus the old `ravif`/`rav1e` path
-    // (a different encoder, different chroma handling, different AV1
-    // encoder implementation entirely) - see this change's own report.
-    let image = AvifImageGuard::create(width, height, 8, sys::AVIF_PIXEL_FORMAT_YUV420)?;
+    let quality = f32::from(quality).clamp(1.0, 100.0);
+    let speed = speed.clamp(1, 10);
 
-    unsafe {
-        let mut rgb: sys::avifRGBImage = std::mem::zeroed();
-        sys::avifRGBImageSetDefaults(&mut rgb, image.0);
-        rgb.format = sys::AVIF_RGB_FORMAT_RGBA;
-        rgb.depth = 8;
-        rgb.ignoreAlpha = if has_alpha { sys::AVIF_FALSE } else { sys::AVIF_TRUE } as sys::avifBool;
-        // Borrows `rgba`'s own buffer for the duration of `avifImageRGBToYUV`
-        // below - not allocated or freed by libavif, unlike `decode_inner`'s
-        // `AvifRgbGuard`, so no guard/free call is needed for `rgb` here.
-        rgb.pixels = rgba.as_raw().as_ptr().cast_mut();
-        rgb.rowBytes = width
-            .checked_mul(4)
-            .context("libavif: row byte count overflow")?;
-
-        let res = sys::avifImageRGBToYUV(image.0, &rgb);
-        ensure_avif_ok(res, "avifImageRGBToYUV")?;
-
-        if let Some(exif) = exif_metadata.filter(|e| !e.is_empty()) {
-            // Best-effort, same spirit as the ICC/EXIF `let _ =` branches
-            // elsewhere in `handler.rs`: a metadata-write failure (e.g. a
-            // malformed EXIF payload libavif's own parser rejects) isn't
-            // worth failing the whole encode over.
-            let _ = sys::avifImageSetMetadataExif(image.0, exif.as_ptr(), exif.len());
-        }
-
-        let encoder = AvifEncoderGuard::create()?;
-        (*encoder.0).quality = i32::from(quality.min(100));
-        (*encoder.0).qualityAlpha = i32::from(quality.min(100));
-        (*encoder.0).speed = i32::from(speed.min(10));
-
-        let mut out: sys::avifRWData = std::mem::zeroed();
-        let res = sys::avifEncoderWrite(encoder.0, image.0, &mut out);
-        if res != sys::AVIF_RESULT_OK {
-            sys::avifRWDataFree(&mut out);
-            return ensure_avif_ok(res, "avifEncoderWrite").map(|()| unreachable!());
-        }
-
-        let bytes = std::slice::from_raw_parts(out.data, out.size).to_vec();
-        sys::avifRWDataFree(&mut out);
-        Ok(bytes)
+    let mut encoder = ravif::Encoder::new()
+        .with_quality(quality)
+        .with_alpha_quality(quality)
+        .with_speed(speed);
+    if let Some(exif) = exif_metadata.filter(|e| !e.is_empty()) {
+        encoder = encoder.with_exif(exif);
     }
+
+    // `encode_rgba` inspects the actual pixel data
+    // (`buffer.pixels().any(|px| px.a != 255)`) to decide whether an alpha
+    // plane is worth encoding at all - no separate "does this image have
+    // alpha" flag needs to be threaded in the way libavif's
+    // `avifRGBImage.ignoreAlpha` required, since `img.to_rgba8()` above
+    // already normalises every source (alpha or not) to the same RGBA8
+    // shape `ravif` expects.
+    use rgb::FromSlice;
+    let pixels = rgba.as_raw().as_rgba();
+    let buffer = imgref::Img::new(pixels, width as usize, height as usize);
+
+    let encoded = encoder
+        .encode_rgba(buffer)
+        .map_err(|e| anyhow::anyhow!("ravif: encode failed: {e}"))?;
+
+    Ok(encoded.avif_file)
 }
 
 #[cfg(test)]
@@ -540,15 +445,16 @@ mod tests {
     use super::*;
     use image::GenericImageView;
 
-    /// `handler.rs::ImageService::is_avif` is a hand-rolled, FFI-free
-    /// `ftyp`-box magic-byte check (kept dependency-free so
-    /// `detect_format_from_bytes` doesn't need to link `libavif-sys` just
+    /// `handler.rs::ImageService::is_avif` is a hand-rolled, parser-free
+    /// `ftyp`-box magic-byte check (kept dependency-free there so
+    /// `detect_format_from_bytes` doesn't need to link an AVIF parser just
     /// to sniff a format tag - see that function's own doc comment). This
-    /// pins it against libavif's *own* `avifPeekCompatibleFileType` (this
-    /// module's `is_avif`) on a real encoded AVIF, so the two can't
-    /// silently drift apart.
+    /// pins it against `avif_parse::read_avif` succeeding (this module's
+    /// `is_avif` - see that function's own doc comment on what changed here
+    /// post-libavif) on a real encoded AVIF, so the two can't silently
+    /// drift apart.
     #[test]
-    fn handler_is_avif_agrees_with_libavif_peek_compatible_file_type() {
+    fn handler_is_avif_agrees_with_avif_parse_read_avif() {
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(4, 4));
         let avif_bytes = encode(&img, 50, 8, None).expect("AVIF encode should succeed");
 
@@ -578,51 +484,71 @@ mod tests {
             decode(&avif_bytes, 50).expect("AVIF decode should succeed");
 
         assert_eq!(decoded.dimensions(), (32, 24));
+        // Always `NoTransforms` now - `avif-parse` has no `irot`/`imir`
+        // support to read a different value from. See `decode_inner`'s own
+        // doc comment.
         assert_eq!(orientation, Orientation::NoTransforms);
     }
 
     #[test]
-    fn encode_writes_exif_metadata_readable_on_decode() {
-        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(4, 4));
-        // Minimal well-formed EXIF TIFF header (no IFD entries) - enough
-        // for `avifImageSetMetadataExif`'s own parser to accept without
-        // needing a real orientation tag.
-        let exif: &[u8] = b"II*\0\x08\0\0\0\0\0\0\0";
-        let avif_bytes = encode(&img, 70, 8, Some(exif)).expect("AVIF encode should succeed");
+    fn peek_dimensions_matches_decoded_dimensions() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            17,
+            9,
+            image::Rgb([10, 20, 30]),
+        ));
+        let avif_bytes = encode(&img, 70, 8, None).expect("AVIF encode should succeed");
 
-        let (_decoded, _orientation, _icc, exif_out) =
-            decode(&avif_bytes, 50).expect("AVIF decode should succeed");
-
-        assert_eq!(exif_out.as_deref(), Some(exif));
+        let peeked = peek_dimensions(&avif_bytes).expect("peek_dimensions should succeed");
+        assert_eq!(peeked, (17, 9));
     }
 
     #[test]
-    fn avif_orientation_maps_every_exif_orientation_libavif_can_produce() {
-        const IROT: sys::avifTransformFlags = 1 << 2;
-        const IMIR: sys::avifTransformFlags = 1 << 3;
+    fn decode_rejects_oversized_source_before_the_expensive_decode() {
+        // 1200x900 = 1_080_000 px = 1 MP once `check_source_resolution`'s
+        // own integer-truncating `pixels / 1_000_000` division rounds it
+        // down - comfortably over a max of 0 MP. A smaller image wouldn't
+        // trip this guard at all: `check_source_resolution` truncates to
+        // whole megapixels, so anything under 1 MP computes `megapixels =
+        // 0`, which never exceeds a `max_src_resolution_mp` of `0` either.
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            1200,
+            900,
+            image::Rgb([1, 2, 3]),
+        ));
+        let avif_bytes = encode(&img, 50, 10, None).expect("AVIF encode should succeed");
 
-        // (transform_flags, angle, axis) -> expected EXIF orientation,
-        // taken directly from libavif's own
-        // avifImageExtractExifOrientationToIrotImir table (see this
-        // module's `avif_orientation` doc comment).
-        let cases: &[(sys::avifTransformFlags, u8, u8, u8)] = &[
-            (0, 0, 0, 1),
-            (IMIR, 0, 1, 2),
-            (IROT, 2, 0, 3),
-            (IMIR, 0, 0, 4),
-            (IROT | IMIR, 1, 0, 5),
-            (IROT, 3, 0, 6),
-            (IROT | IMIR, 3, 0, 7),
-            (IROT, 1, 0, 8),
-        ];
+        let err = decode(&avif_bytes, 0).expect_err("oversized source should be rejected");
+        assert!(
+            err.to_string().contains("resolution too large"),
+            "unexpected error: {err}"
+        );
+    }
 
-        for &(flags, angle, axis, expected_exif) in cases {
-            let expected = Orientation::from_exif(expected_exif).unwrap();
-            assert_eq!(
-                avif_orientation(flags, angle, axis),
-                expected,
-                "flags={flags} angle={angle} axis={axis}"
-            );
-        }
+    /// `ravif::Encoder::with_exif` writes a real EXIF item into the AVIF
+    /// file (asserted here by checking the raw payload is present in the
+    /// output bytes), but `avif-parse` - and so this module's `decode` -
+    /// has no EXIF-read support at all (see `decode_inner`'s own doc
+    /// comment on why). This pins both halves of that asymmetry: encode
+    /// writes it, decode cannot read it back.
+    #[test]
+    fn encode_writes_exif_but_decode_cannot_read_it_back() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(4, 4));
+        // Minimal well-formed EXIF TIFF header (no IFD entries).
+        let exif: &[u8] = b"II*\0\x08\0\0\0\0\0\0\0";
+        let avif_bytes = encode(&img, 70, 8, Some(exif)).expect("AVIF encode should succeed");
+
+        let contains_exif_payload = avif_bytes.windows(exif.len()).any(|w| w == exif);
+        assert!(
+            contains_exif_payload,
+            "encoded AVIF should embed the EXIF payload as-is"
+        );
+
+        let (_decoded, _orientation, _icc, exif_out) =
+            decode(&avif_bytes, 50).expect("AVIF decode should succeed");
+        assert_eq!(
+            exif_out, None,
+            "avif-parse has no EXIF-read support - see decode_inner's doc comment"
+        );
     }
 }

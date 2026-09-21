@@ -8,11 +8,12 @@ startup checks that fail closed by design, to a working `/health` response.
 - A stable Rust toolchain. `Cargo.toml` sets `edition = "2024"`, which needs
   Rust 1.85 or newer; CI builds against whatever `dtolnay/rust-toolchain@stable`
   currently resolves to, so there's no lower pin to target beyond that.
-- `nasm`, **only when building on x86_64** (Linux/macOS amd64). It's needed
-  by `mozjpeg-sys` for libjpeg-turbo's x86 SIMD path. aarch64 (Apple
-  Silicon, arm64 Linux) doesn't need it - it uses its own NEON path. If
-  you're on x86_64 and skip it, the build either fails outright or falls
-  back to scalar C, quietly losing most of the mozjpeg decode speedup.
+  Nothing else: `emgr` has no C or C++ dependencies (#134), so there's no
+  native toolchain to install (`nasm`, `cmake`, `meson`, `ninja-build` used
+  to be required here, for `mozjpeg-sys`/`libavif-sys`'s vendored C builds;
+  a `no-native-deps` CI job now fails the build if any dependency
+  reintroduces one). `cargo build` is a self-contained Rust build on every
+  supported target.
 - [Docker](https://docs.docker.com/get-docker/) and
   [Docker Compose](https://docs.docker.com/compose/) v2 (optional - see
   [Docker deployment](../deployment/docker.md)).
@@ -45,12 +46,12 @@ Error: No storage features are enabled
 Every build must name at least one storage backend explicitly, from
 `Cargo.toml`'s `[features]`:
 
-| Feature | What it does |
-|---|---|
-| `local_fs` | Store resized images on local disk. No external dependency - the easiest way to get started. |
-| `s3` | Store resized images in S3 or an S3-compatible service (MinIO). Needs a reachable endpoint - see [Docker deployment](../deployment/docker.md) for a MinIO-backed `compose.yaml` setup. |
+| Feature     | What it does                                                                                                                                                                                                                                                                              |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local_fs`  | Store resized images on local disk. No external dependency - the easiest way to get started.                                                                                                                                                                                              |
+| `s3`        | Store resized images in S3 or an S3-compatible service (MinIO). Needs a reachable endpoint - see [Docker deployment](../deployment/docker.md) for a MinIO-backed `compose.yaml` setup.                                                                                                    |
 | `in_memory` | An in-process cache. Only reachable in this crate's own test builds ([GH #39](https://github.com/vaam-store/image-resizer/issues/39)) - selecting it in a release build falls through to the same "no storage backend" error above. Useful for `cargo test`, not for running the service. |
-| `otel` | OpenTelemetry tracing + a Prometheus `/metrics` endpoint. Combine with a storage feature, e.g. `local_fs,otel`. |
+| `otel`      | OpenTelemetry tracing + a Prometheus `/metrics` endpoint. Combine with a storage feature, e.g. `local_fs,otel`.                                                                                                                                                                           |
 
 You can enable more than one storage feature in the same binary - see
 `STORAGE_TYPE` in [Configuration](configuration.md) for how the backend is

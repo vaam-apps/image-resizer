@@ -239,11 +239,17 @@ pub fn apply_common_middlewares(router: Router, config: MiddlewareConfig) -> Rou
         .and(NotForContentType::new("application/octet-stream"))
         .and(SizeAbove::new(0));
 
+    // No `.zstd(true)`: zstd was the one arm of tower-http's
+    // `compression-full` feature that is not pure Rust - it resolves to
+    // `zstd-sys`, which compiles the C zstd library from source - so the
+    // feature is no longer enabled and the builder method no longer exists.
+    // brotli, gzip and deflate all remain, and between them cover every
+    // `Accept-Encoding` a browser sends; zstd is negotiated by very few
+    // clients and only ever as an extra.
     let compression_layer = CompressionLayer::new()
         .br(true)
         .deflate(true)
         .gzip(true)
-        .zstd(true)
         .compress_when(compression_predicate);
 
     let saturation_guard = SaturationGuard {
@@ -344,7 +350,7 @@ mod tests {
             },
         );
         let addr = spawn_test_router(app).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
         let url = format!("http://{addr}/slow");
 
         // First request takes (and holds) the sole permit for 250ms.
@@ -390,7 +396,7 @@ mod tests {
             },
         );
         let addr = spawn_test_router(app).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
 
         let response = client
             .get(format!("http://{addr}/slow"))
@@ -408,6 +414,10 @@ mod tests {
     }
 
     fn conditional_test_router() -> Router {
+        // These build real reqwest Clients through production code, which
+        // panics unless a rustls crypto provider is installed. `main()`
+        // does that at startup; `cargo test` never runs `main()`.
+        crate::modules::utils::crypto::ensure_crypto_provider_installed();
         let app = Router::new().route("/api/images/files/{key}", get(download_stub));
         app.layer(middleware::from_fn(conditional_download_middleware))
     }
@@ -416,7 +426,7 @@ mod tests {
     async fn first_request_gets_200_with_etag_last_modified_and_vary() {
         let app = conditional_test_router();
         let addr = spawn_test_router(app).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
         let key = "abc123.png";
 
         let response = client
@@ -441,7 +451,7 @@ mod tests {
     async fn matching_if_none_match_returns_304_with_no_body() {
         let app = conditional_test_router();
         let addr = spawn_test_router(app).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
         let key = "def456.webp";
         let url = format!("http://{addr}/api/images/files/{key}");
 
@@ -483,7 +493,7 @@ mod tests {
     async fn non_matching_if_none_match_still_returns_200() {
         let app = conditional_test_router();
         let addr = spawn_test_router(app).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
         let key = "ghi789.jpeg";
 
         let response = client
@@ -500,7 +510,7 @@ mod tests {
     async fn wildcard_if_none_match_returns_304() {
         let app = conditional_test_router();
         let addr = spawn_test_router(app).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
         let key = "wildcard-key.png";
 
         let response = client
@@ -518,7 +528,7 @@ mod tests {
         let app = Router::new().route("/health", get(|| async { "ok" }));
         let app = app.layer(middleware::from_fn(conditional_download_middleware));
         let addr = spawn_test_router(app).await;
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
 
         let response = client
             .get(format!("http://{addr}/health"))

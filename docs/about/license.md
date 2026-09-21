@@ -30,19 +30,34 @@ SOFTWARE.
 
 ## Third-party notices
 
-`emgr` links native code with its own licenses and attribution
-obligations, reproduced from the repository's
+`emgr` has no C or C++ dependencies (#134) — every image codec it uses is
+implemented in Rust and statically linked into the binary. That did not
+clear every third-party attribution obligation, though: one licence
+survived the rewrite. Reproduced from the repository's
 [`NOTICE`](https://github.com/vaam-store/image-resizer/blob/main/NOTICE)
 file:
 
-- **mozjpeg** (via the `mozjpeg`/`mozjpeg-sys` crates, used for DCT-scaled
-  and full-size JPEG decoding and for JPEG encoding - see the
-  [changelog](changelog.md#performance)) vendors libjpeg-turbo and
-  Independent JPEG Group (IJG) code, distributed under the IJG, Zlib and
-  BSD-3-Clause licenses. Per the IJG license, this software is based in
-  part on the work of the Independent JPEG Group.
-- **libwebp** (via the `webp` crate, BSD-3-Clause) is used for lossy WebP
-  encoding.
+- **jpeg-encoder** (`(MIT OR Apache-2.0) AND IJG`) is used for JPEG
+  encoding, replacing `mozjpeg`/`mozjpeg-sys` (which vendored libjpeg-turbo
+  and Independent JPEG Group (IJG) code - see the
+  [changelog](changelog.md#performance)). It is easy to assume rewriting a
+  codec in Rust sheds a C library's licence, but `jpeg-encoder` is itself
+  licensed `(MIT OR Apache-2.0) AND IJG`: its default quantisation and
+  Huffman tables derive from the IJG reference implementation. Per the IJG
+  license, this software is based in part on the work of the Independent
+  JPEG Group, and that notice stays required for as long as `jpeg-encoder`
+  is a dependency.
+- **jpeg-decoder** (`MIT OR Apache-2.0`) is used for DCT-scaled and
+  full-size JPEG decoding, also replacing `mozjpeg`/`mozjpeg-sys`. No IJG
+  obligation attaches to this crate.
+- **vaam-image-webp** (`MIT OR Apache-2.0`), this org's fork of
+  `image-rs/image-webp`, is used for WebP encoding and decoding, replacing
+  the `webp` crate (real libwebp via FFI).
+- **ravif** + **rav1e** (`BSD-2-Clause`) is used for AVIF encoding,
+  replacing `libavif`/AOM.
+- **avif-decode** + **rav1d** (`BSD-2-Clause`) is used for AVIF decoding,
+  replacing `libavif`/dav1d. `rav1d` is a Rust port of `dav1d` and carries
+  its BSD-2-Clause license.
 
 Full license texts for every dependency ship with those crates and are
 reproduced in the dependency tree under `~/.cargo/registry` (or your

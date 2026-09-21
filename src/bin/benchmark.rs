@@ -477,6 +477,18 @@ fn write_json_report(path: &str, report: &BenchmarkReport) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load-bearing, and must run before the first `reqwest::Client` (#134).
+    // `emgr`'s reqwest is built with `rustls-no-provider` so that aws-lc-rs - a
+    // large C and assembly codebase - stays out of the graph, which means
+    // rustls has no crypto provider compiled in and `Client::new()` PANICS
+    // until one is installed. This binary builds Clients in `wait_until_ready`
+    // and in the load loop, so without this it panics on startup.
+    //
+    // `emgr::main` does the same thing; this is a separate binary with its own
+    // entry point, so it needs its own call.
+    emgr::modules::utils::crypto::install_crypto_provider()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     let config = BenchmarkConfig::init_from_env()?;
     if let Err(e) = config.validate() {
         eprintln!("Configuration error: {e}");

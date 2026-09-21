@@ -51,15 +51,15 @@ ENGINES="imgproxy emgr emgr_s3" SCENARIOS="cold warm" \
 
 ## What's in this directory
 
-| Path | What it is |
-|---|---|
-| `compose.yaml` | The stack: `origin` (nginx, serves the fixture corpus), `emgr` (local_fs backend, built from the repo's own `Dockerfile`, `fs_deploy` target), `emgr_s3` (S3/MinIO backend, same `Dockerfile`, `s3_deploy` target), `minio` + `minio_init` (S3-compatible object store `emgr_s3` writes to, plus a one-shot bucket-creation/public-ACL container), `imgproxy` (pinned `darthsim/imgproxy:v4.0.13`), `driver` (pinned `grafana/k6:2.2.0`, run on demand) |
-| `origin/nginx.conf` | Static file server for the corpus, gzip off, no caching headers, ignores query strings |
-| `fixtures/generate.py` | Deterministic fixture corpus generator (see below) |
-| `fixtures/corpus/` | The generated images nginx serves |
-| `driver/k6-script.js` | The load test script: URL builders per engine, scenario logic, metrics |
-| `driver/run.sh` | Orchestrates bring-up, healthchecks, and the scenario sweep |
-| `results/` | JSON reports + full k6 logs land here, one file per (engine, scenario, concurrency) |
+| Path                   | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compose.yaml`         | The stack: `origin` (nginx, serves the fixture corpus), `emgr` (local_fs backend, built from the repo's own `Dockerfile`, `fs_deploy` target), `emgr_s3` (S3/MinIO backend, same `Dockerfile`, `s3_deploy` target), `minio` + `minio_init` (S3-compatible object store `emgr_s3` writes to, plus a one-shot bucket-creation/public-ACL container), `imgproxy` (pinned `darthsim/imgproxy:v4.0.13`), `driver` (pinned `grafana/k6:2.2.0`, run on demand) |
+| `origin/nginx.conf`    | Static file server for the corpus, gzip off, no caching headers, ignores query strings                                                                                                                                                                                                                                                                                                                                                                  |
+| `fixtures/generate.py` | Deterministic fixture corpus generator (see below)                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `fixtures/corpus/`     | The generated images nginx serves                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `driver/k6-script.js`  | The load test script: URL builders per engine, scenario logic, metrics                                                                                                                                                                                                                                                                                                                                                                                  |
+| `driver/run.sh`        | Orchestrates bring-up, healthchecks, and the scenario sweep                                                                                                                                                                                                                                                                                                                                                                                             |
+| `results/`             | JSON reports + full k6 logs land here, one file per (engine, scenario, concurrency)                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## The fixture corpus: generated, not downloaded
 
@@ -80,15 +80,15 @@ time, so that:
 
 Corpus contents:
 
-| File | Dimensions | Content |
-|---|---|---|
-| `photo_4k.jpg` | 3840x2160 | Gradient + per-pixel noise ("photo-like"), JPEG q90 |
-| `photo_1080p.jpg` | 1920x1080 | Same generator, JPEG q90 |
-| `photo_800x600.jpg` | 800x600 | Same generator, JPEG q90 |
-| `photo_1080p.webp` | 1920x1080 | Same pixel content as `photo_1080p.jpg`, re-encoded WebP q90 -- exercises libwebp source decode (#66), previously untested by this harness |
-| `photo_1080p.avif` | 1920x1080 | Same pixel content again, AVIF q85 -- exercises libavif/dav1d source decode (#67), previously untested by this harness |
-| `alpha_1024.png` | 1024x1024 | RGBA with a fully-transparent border whose RGB channels are garbage -- exercises alpha-flattening on PNG->JPEG/WebP conversion |
-| `flat_1024.png` | 1024x1024 | Single solid colour, compresses to ~4.5KB |
+| File                | Dimensions | Content                                                                                                                                                                                                    |
+| ------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `photo_4k.jpg`      | 3840x2160  | Gradient + per-pixel noise ("photo-like"), JPEG q90                                                                                                                                                        |
+| `photo_1080p.jpg`   | 1920x1080  | Same generator, JPEG q90                                                                                                                                                                                   |
+| `photo_800x600.jpg` | 800x600    | Same generator, JPEG q90                                                                                                                                                                                   |
+| `photo_1080p.webp`  | 1920x1080  | Same pixel content as `photo_1080p.jpg`, re-encoded WebP q90 -- exercises WebP source decode (#66; via `vaam-image-webp` as of #134, previously real libwebp via FFI), previously untested by this harness |
+| `photo_1080p.avif`  | 1920x1080  | Same pixel content again, AVIF q85 -- exercises AVIF source decode (#67; via `avif-decode`/`rav1d` as of #134, previously `libavif`/dav1d), previously untested by this harness                            |
+| `alpha_1024.png`    | 1024x1024  | RGBA with a fully-transparent border whose RGB channels are garbage -- exercises alpha-flattening on PNG->JPEG/WebP conversion                                                                             |
+| `flat_1024.png`     | 1024x1024  | Single solid colour, compresses to ~4.5KB                                                                                                                                                                  |
 
 Regenerating produces byte-identical files (no wall-clock or hostname
 inputs) -- the corpus doesn't strictly need to be committed to get a
@@ -109,7 +109,7 @@ issue #53/#27) has landed. Both `emgr` and `emgr_s3` speak the same
 imgproxy-style signed-path grammar -- the storage backend changes where the
 redirect *points*, never the request URL shape:
 
-```
+```http
 GET /{signature}/{processing_options}/{base64url source}.{extension}
 -> 301 Location: <CDN_BASE_URL>/<key>
 ```
@@ -310,13 +310,13 @@ Each `results/*.json` report (`driver/k6-script.js`'s `handleSummary`)
 exports two views of latency and throughput, and they are **not**
 interchangeable:
 
-| Metric | What it measures | Comparable across engines? |
-|---|---|---|
-| `http_req_duration` | latency of a single HTTP request | **No** |
-| `throughput_rps` (from `http_reqs.rate`) | HTTP requests/sec | **No** |
-| `iteration_duration` | wall-clock for one complete delivered image, redirect hops included | **Yes** |
-| `images_per_second` (from `iterations.rate`) | delivered images/sec | **Yes** |
-| `http_reqs_per_iteration` | HTTP requests issued per delivered image | the tell, see below |
+| Metric                                       | What it measures                                                    | Comparable across engines? |
+| -------------------------------------------- | ------------------------------------------------------------------- | -------------------------- |
+| `http_req_duration`                          | latency of a single HTTP request                                    | **No**                     |
+| `throughput_rps` (from `http_reqs.rate`)     | HTTP requests/sec                                                   | **No**                     |
+| `iteration_duration`                         | wall-clock for one complete delivered image, redirect hops included | **Yes**                    |
+| `images_per_second` (from `iterations.rate`) | delivered images/sec                                                | **Yes**                    |
+| `http_reqs_per_iteration`                    | HTTP requests issued per delivered image                            | the tell, see below        |
 
 The reason: `emgr` and `emgr_s3` answer a resize request with a `301`
 redirect to wherever the derivative is stored, and k6 follows it, so
@@ -330,9 +330,12 @@ drags emgr's reported median down and roughly doubles emgr's apparent
 `throughput_rps`, in a way that has nothing to do with which engine
 processes images faster. This produced a real, previously-reported error:
 emgr's cold-cache p50 read as "at parity" with imgproxy (22.87 vs 20.66 ms,
-per-request) when the true per-delivered-image figure is 75.81 vs 20.76 ms
-— 3.65x slower, not parity. See `.bench-baseline/BASELINE.md`'s 2026-08-21
-section for the full before/after comparison on real data.
+per-request) when the true per-delivered-image figure was 75.81 vs 20.76 ms
+— 3.65x slower, not parity (measured under the old C codec stack, pre-#134:
+**TODO(re-measure)** — the methodology lesson about which metric to
+trust holds regardless of which codecs emgr links). See
+`.bench-baseline/BASELINE.md`'s 2026-08-21 section for the full before/after
+comparison on real data.
 
 **Always read `iteration_duration` and `images_per_second` when comparing
 engines.** `http_req_duration` and `throughput_rps` are kept in the report
@@ -406,11 +409,12 @@ ramp-up period muddying the numbers.
 Every valid combination of the 7 corpus fixtures, 3 target sizes
 (`300x300`, `640x480`, `1200x800` by default), and 4 output formats
 (`jpg`, `png`, `webp`, `avif` by default -- `avif` added so the harness
-exercises libavif encode (#68) in addition to the source-side libwebp/
-libavif decode the two new `photo_1080p.webp`/`photo_1080p.avif` fixtures
-above add; override with `FORMATS=jpg,png,webp` to reproduce a pre-AVIF
-run) is exercised within a single run, rotated round-robin across
-iterations -- see `COMBOS` in `driver/k6-script.js`.
+exercises AVIF encode (#68; via `ravif`/`rav1e` as of #134, previously
+`libavif`/AOM) in addition to the source-side WebP/AVIF decode the two new
+`photo_1080p.webp`/`photo_1080p.avif` fixtures above add; override with
+`FORMATS=jpg,png,webp` to reproduce a pre-AVIF run) is exercised within a
+single run, rotated round-robin across iterations -- see `COMBOS` in
+`driver/k6-script.js`.
 
 ### Output size at comparable quality
 
@@ -431,15 +435,26 @@ latency in every scenario's JSON report -- no separate run needed.
   comparison for a tool that doesn't expose the knob on one side -- but it
   does mean the two are not guaranteed to be encoding at the same visual
   quality target).
-- **WebP: fixed since this section was first written.** `adr/0001` measured
-  emgr's WebP as lossless-only (~4.8x the equivalent JPEG). That is no longer
-  true: emgr now encodes lossy WebP through libwebp (`webp` crate), same
-  underlying encoder imgproxy uses, so the WebP column is a fair comparison.
-  Note `adr/0001`'s numbers came from a synthetic noise fixture at unmatched
-  quality and should not be trusted -- `adr/0003-webp-measurement.md`
+- **WebP: fixed since this section was first written, then the implementation
+  changed again by #134.** `adr/0001` measured emgr's WebP as lossless-only
+  (~4.8x the equivalent JPEG). That was fixed when emgr started encoding
+  lossy WebP through real libwebp (the `webp` crate), the same underlying
+  encoder imgproxy uses, making the WebP column a fair comparison. As of
+  #134, WebP encode goes through `vaam-image-webp` instead (this org's fork
+  of `image-rs/image-webp`, pure Rust, tracking its unreleased lossy VP8
+  encoder) -- still lossy, so the comparison stays fair in kind, but
+  whether it matches real libwebp's output size closely enough to keep the
+  numbers below is unmeasured: **TODO(re-measure)**. Note `adr/0001`'s
+  numbers came from a synthetic noise fixture at unmatched quality and
+  should not be trusted regardless -- `adr/0003-webp-measurement.md`
   re-measured properly against the Kodak corpus with DSSIM-matched quality
-  and found WebP ~14-16% smaller than JPEG. `adr/0001`'s AVIF figures have
-  the same methodological flaw and have NOT been re-measured.
+  and found (real-libwebp) WebP ~14-16% smaller than JPEG; that figure
+  describes the libwebp implementation this section just described as
+  replaced, and has not been re-run against `vaam-image-webp`:
+  **TODO(re-measure)**. `adr/0001`'s AVIF figures have the same
+  methodological flaw, were never re-measured against the `libavif`/AOM
+  encoder `adr/0005` later shipped, and are further still from today's
+  `ravif`/`rav1e` implementation (#134).
 
 Read the byte-size numbers as "what each engine produces by default today,"
 not "what each engine produces at an equivalent quality target" -- those
@@ -450,13 +465,20 @@ given emgr's current API surface.
 
 `imgproxy` (via libvips) supports shrink-on-load: a scaled JPEG/WebP decode
 that skips fully decoding pixels the resize step would immediately throw
-away. `emgr`'s pure-Rust `image`/`zune-jpeg` decode path has no equivalent
--- `adr/0001-image-engine.md` verified directly against `zune-jpeg`'s source
-that there is no public API for a DCT-domain scaled decode, and the
-project's own criterion baseline
-(`.bench-baseline/BASELINE.md`) shows decode already dominating the
-pipeline at 1920x1080 (6.78ms JPEG decode vs. 17.39ms for a full lanczos3
-downscale -- decode is not a rounding error next to resize cost).
+away. `emgr`'s fallback JPEG decode path -- `image`'s own `zune-jpeg` --
+has no equivalent: `adr/0001-image-engine.md` verified directly against
+`zune-jpeg`'s source that there is no public API for a DCT-domain scaled
+decode. (This is distinct from `emgr`'s primary JPEG decode path, which
+does DCT-scale via `jpeg-decoder`'s `Decoder::scale()` as of #134 --
+`mozjpeg` provided the same capability before it -- chosen specifically
+for that API; see [Image engine](../README.md#image-engine). `zune-jpeg`
+is reached only as a fallback on a primary-decoder failure.) Neither path
+has a scaled-decode option for WebP or AVIF. The project's own criterion
+baseline (`.bench-baseline/BASELINE.md`) shows decode already a
+substantial share of the pipeline at 1920x1080 (was: 6.78ms JPEG decode
+vs. 17.39ms for a full lanczos3 downscale, measured via `mozjpeg` --
+decode is not a rounding error next to resize cost; not re-measured
+against `jpeg-decoder`: **TODO(re-measure)**).
 
 **If imgproxy wins the cold-cache scenario by a wide margin on the large
 downscale combinations (4K/1080p source -> 300x300 or 640x480 output), this
@@ -499,25 +521,34 @@ section for the s3 numbers this unblocked.
 
 ### Validated: imgproxy vs. emgr (local_fs), cold cache, concurrency 2
 
+**TODO(re-measure).** This run predates #134: it measured emgr built
+against the old C codec stack (`mozjpeg`, the `webp` crate/libwebp,
+`libavif`/AOM/dav1d). Every number in the table and the analysis below
+describes that implementation, not the current pure-Rust one
+(`jpeg-decoder`/`jpeg-encoder`, `vaam-image-webp`, `ravif`/`avif-decode`).
+Kept here as the historical record of the last validated run, not as a
+current comparison.
+
 Real `k6` run, `SCENARIO=cold`, `VUS=2`, `DURATION=20s`, both against the
 same `origin` corpus, both with zero non-2xx/timeout/connection errors
 (`results/imgproxy-cold-vus2.json`, `results/emgr-cold-vus2.json`):
 
-| Metric | imgproxy | emgr (local_fs) |
-|---|---:|---:|
-| Requests (2xx) | 1001 | 337 |
-| Non-2xx / timeout / conn error | 0 / 0 / 0 | 0 / 0 / 0 |
-| Throughput | 50.01 req/s | 33.59 req/s |
-| p50 (med) | 24.75 ms | 24.03 ms |
-| p90 | 83.14 ms | 181.76 ms |
-| p99 | 176.34 ms | 284.60 ms |
-| p99.9 | 187.74 ms | 554.05 ms |
-| max | 199.44 ms | 560.26 ms |
-| avg response size | 152,091 B | 232,918 B |
+| Metric                         | imgproxy    | emgr (local_fs) |
+| ------------------------------ | ----------: | --------------: |
+| Requests (2xx)                 | 1001        | 337             |
+| Non-2xx / timeout / conn error | 0 / 0 / 0   | 0 / 0 / 0       |
+| Throughput                     | 50.01 req/s | 33.59 req/s     |
+| p50 (med)                      | 24.75 ms    | 24.03 ms        |
+| p90                            | 83.14 ms    | 181.76 ms       |
+| p99                            | 176.34 ms   | 284.60 ms       |
+| p99.9                          | 187.74 ms   | 554.05 ms       |
+| max                            | 199.44 ms   | 560.26 ms       |
+| avg response size              | 152,091 B   | 232,918 B       |
 
 At this (deliberately low, `MAX_CONCURRENT_PROCESSING=2`) concurrency
-level, imgproxy sustains roughly 1.5x emgr's throughput and has a visibly
-tighter tail (p99.9/p50 ratio ~7.6x for imgproxy vs. ~23x for emgr). Two
+level, imgproxy sustained roughly 1.5x emgr's throughput and had a visibly
+tighter tail (p99.9/p50 ratio ~7.6x for imgproxy vs. ~23x for emgr) —
+**under the old C codec stack; TODO(re-measure)**. Two
 confounds worth naming before reading more into this than that: (1) emgr's
 average response is ~53% larger than imgproxy's for the same request mix
 -- see "Output size at comparable quality" above, the two are not
@@ -538,7 +569,7 @@ reached `healthy` and the bucket was created and made public correctly),
 but for a time `emgr_s3` built successfully and then **crashed on
 startup**:
 
-```
+```text
 /app/emgr: /lib/aarch64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by /app/emgr)
 ```
 

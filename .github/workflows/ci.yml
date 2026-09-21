@@ -52,23 +52,16 @@ jobs:
           - s3
           - local_fs,otel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # zizmor[artipacked]: checkout persists the token in
+          # .git/config by default. No job in this workflow pushes
+          # with git, so it is pure exposure.
+          persist-credentials: false
 
-      # libdav1d-sys builds dav1d from source via meson/ninja, and
-      # libavif-sys/libaom-sys build libavif and AOM via cmake with nasm for
-      # SIMD. The Dockerfile installs these for the image build; the runners
-      # that compile the crate directly need them too. Adding them to the
-      # Dockerfile alone is what broke this job on its first run - a build
-      # dependency declared in one place and not the other.
-      - name: install native codec build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake meson ninja-build nasm
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: test-${{ matrix.features }}
 
@@ -82,25 +75,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # zizmor[artipacked]: checkout persists the token in
+          # .git/config by default. No job in this workflow pushes
+          # with git, so it is pure exposure.
+          persist-credentials: false
 
-      # libdav1d-sys builds dav1d from source via meson/ninja, and
-      # libavif-sys/libaom-sys build libavif and AOM via cmake with nasm for
-      # SIMD. The Dockerfile installs these for the image build; the runners
-      # that compile the crate directly need them too. Adding them to the
-      # Dockerfile alone is what broke this job on its first run - a build
-      # dependency declared in one place and not the other.
-      - name: install native codec build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake meson ninja-build nasm
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: clippy-local_fs
 
@@ -131,9 +117,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # zizmor[artipacked]: checkout persists the token in
+          # .git/config by default. No job in this workflow pushes
+          # with git, so it is pure exposure.
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       # `helm dependency build` (not `update`) - both charts commit a
       # Chart.lock, so this resolves exactly the pinned `common` library
@@ -177,7 +168,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # zizmor[artipacked]: checkout persists the token in
+          # .git/config by default. No job in this workflow pushes
+          # with git, so it is pure exposure.
+          persist-credentials: false
 
       # Reads Cargo.lock directly - doesn't need `make init` or a build.
       #
@@ -195,18 +191,149 @@ jobs:
       #
       # An advisory scan is not a build: seeing every feature's dependencies is
       # the point, not a false positive.
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check
+
+  no-native-deps:
+    name: no C/C++ build dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # zizmor[artipacked]: checkout persists the token in
+          # .git/config by default. No job in this workflow pushes
+          # with git, so it is pure exposure.
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      # #134 took every C and C++ dependency out of this service: mozjpeg-sys
+      # (libjpeg-turbo), libavif-sys/libaom-sys/libdav1d-sys, libwebp-sys,
+      # libmimalloc-sys, zstd-sys and aws-lc-sys are all gone, replaced by
+      # pure-Rust crates. Nothing in the build compiles C, assembles NASM, or
+      # needs cmake or meson any more, which is why neither the Dockerfile nor
+      # any job in this workflow installs a toolchain.
+      #
+      # That property is invisible in review and trivial to lose: one
+      # transitive dependency flipping on a default feature is enough, and the
+      # symptom would be a confusing linker or "nasm not found" failure in
+      # whichever job happened to build first - or worse, no failure here at
+      # all and a broken `docker build` later, since the runners and the image
+      # are separate places that would each need the toolchain added back.
+      # Fail loudly and specifically instead.
+      #
+      # Runs with --all-features on purpose, same reasoning as cargo-deny
+      # above: aws-lc-sys enters only through the optional `s3` feature, so a
+      # default-feature check would not see the single most likely regression.
+      # Checked for BOTH targets, not just the runner's. This job originally
+      # tested only the host and reported a clean graph while the x86_64 build
+      # genuinely needed NASM - `avif-decode` declares rav1d twice, once per
+      # target, and only the non-x86 table sets `default-features = false`, so
+      # `asm` (and with it nasm-rs and cc) is enabled on x86_64 alone. A
+      # host-only check on an arm64 runner or an Apple Silicon laptop passes
+      # while `docker build --platform linux/amd64` fails on missing nasm.
+      #
+      # `-e all` rather than `-e build`: optional, feature-gated,
+      # target-specific build-dependencies do not reliably show up under
+      # `-e build`, which is the other half of how the same miss happened.
+      # Checks the FEATURE, not the crate. That distinction is the whole
+      # reason this job is shaped the way it is, and the obvious-looking
+      # version of it does not work:
+      #
+      #   * `cc` and `nasm-rs` are in the graph unconditionally, because rav1d
+      #     declares them as plain build-dependencies. But both are ordinary
+      #     Rust crates that merely *drive* external tools, and rav1d's
+      #     `build.rs` `main()` is entirely `#[cfg(feature = "asm")]` - with
+      #     the feature off, neither is ever called. Failing on their presence
+      #     would fail forever, on a build that needs no toolchain at all.
+      #   * `cargo tree -e build` does NOT reliably surface optional,
+      #     feature-gated, target-specific build-dependencies, so a forward
+      #     build-edge scan can report a clean graph for a build that really
+      #     does need NASM.
+      #   * `cargo tree -i <crate>` exits 0 even when it prints "nothing to
+      #     print", so testing its exit status finds everything, always.
+      #
+      # An earlier version of this job made all three mistakes at once and
+      # passed while the amd64 image build was broken.
+      #
+      # Both targets are checked because this is exactly where it hid: the
+      # avif-decode fork aside, upstream enables rav1d's asm on x86_64 only, so
+      # a host-only check on an arm64 runner or an Apple Silicon laptop passes
+      # while `docker build --platform linux/amd64` fails on missing nasm.
+      - name: assert no assembly or native toolchain is required
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+
+          fail=0
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            echo "::group::$target"
+            enabled=$(cargo tree --all-features -e features --target "$target" \
+                        | grep -E 'feature "asm' | sort -u || true)
+            if [ -n "$enabled" ]; then
+              echo "::error::An assembly feature is enabled for $target - the build now needs an assembler and a C compiler."
+              echo "$enabled"
+              fail=1
+            else
+              echo "no asm features enabled"
+            fi
+            echo "::endgroup::"
+          done
+
+          # cmake/meson/bindgen have no such feature subtlety: if they are in
+          # the graph at all, something is compiling native source.
+          for crate in cmake bindgen; do
+            out=$(cargo tree --all-features -e normal,build \
+                    --target x86_64-unknown-linux-gnu -i "$crate" 2>/dev/null || true)
+            if printf '%s' "$out" | grep -q "^$crate v"; then
+              echo "::error::$crate is in the dependency graph - a dependency is building native source."
+              printf '%s\n' "$out" | head -20
+              fail=1
+            fi
+          done
+
+          [ "$fail" -eq 0 ] || {
+            echo "The build must need only rustc. See the Dockerfile's own note."
+            exit 1
+          }
+          echo "OK: no assembly, no native toolchain."
+
+      # Separate concern from the toolchain check: a crate can link a prebuilt
+      # native library without compiling anything, which the feature scan above
+      # would not notice.
+      #
+      # Allowlist rather than a blanket `-sys` ban - these bind libraries that
+      # already exist on the target (macOS system frameworks, the Windows API,
+      # raw Linux syscalls, wasm/JS glue) and compile no source of their own.
+      - name: assert no native (-sys) libraries
+        run: |
+          set -euo pipefail
+          cargo tree --all-features -e normal --target x86_64-unknown-linux-gnu \
+            --prefix none --format '{p}' \
+            | sed 's/ (\*)//' | sort -u > deps.txt
+
+          if grep -iE '(-sys )|^(ring|aws-lc-rs) ' deps.txt \
+              | grep -viE '^(core-foundation-sys|security-framework-sys|windows-sys|linux-raw-sys|wasi|js-sys|web-sys|jni-sys) '; then
+            echo "::error::A dependency reintroduced a native library."
+            exit 1
+          fi
+          echo "OK: no native libraries."
 
   docs-env-drift:
     name: Docs env-var drift check (GH #47)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # zizmor[artipacked]: checkout persists the token in
+          # .git/config by default. No job in this workflow pushes
+          # with git, so it is pure exposure.
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.x"
 
@@ -219,23 +346,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # zizmor[artipacked]: checkout persists the token in
+          # .git/config by default. No job in this workflow pushes
+          # with git, so it is pure exposure.
+          persist-credentials: false
 
-      # libdav1d-sys builds dav1d from source via meson/ninja, and
-      # libavif-sys/libaom-sys build libavif and AOM via cmake with nasm for
-      # SIMD. The Dockerfile installs these for the image build; the runners
-      # that compile the crate directly need them too. Adding them to the
-      # Dockerfile alone is what broke this job on its first run - a build
-      # dependency declared in one place and not the other.
-      - name: install native codec build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake meson ninja-build nasm
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: bench-local_fs
 
@@ -256,7 +376,7 @@ jobs:
       # the PR-side `bench` job below finds it again via `restore-keys`
       # prefix matching, which resolves to the most recent entry.
       - name: Persist baseline for PR comparisons
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/criterion
           key: criterion-baseline-main-${{ github.sha }}
@@ -270,23 +390,16 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # zizmor[artipacked]: checkout persists the token in
+          # .git/config by default. No job in this workflow pushes
+          # with git, so it is pure exposure.
+          persist-credentials: false
 
-      # libdav1d-sys builds dav1d from source via meson/ninja, and
-      # libavif-sys/libaom-sys build libavif and AOM via cmake with nasm for
-      # SIMD. The Dockerfile installs these for the image build; the runners
-      # that compile the crate directly need them too. Adding them to the
-      # Dockerfile alone is what broke this job on its first run - a build
-      # dependency declared in one place and not the other.
-      - name: install native codec build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake meson ninja-build nasm
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: bench-local_fs
 
@@ -295,7 +408,7 @@ jobs:
       # runs with no comparison; bench_gate.py treats that as "no
       # baseline" per benchmark rather than a failure.
       - name: Restore main baseline
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/criterion
           key: criterion-baseline-main-${{ github.sha }}
@@ -322,7 +435,7 @@ jobs:
 
       - name: Post/update PR comment with percentile table
         if: always() && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const fs = require('fs');

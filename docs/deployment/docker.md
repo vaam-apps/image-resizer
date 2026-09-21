@@ -13,12 +13,12 @@ This guide explains how to build and run `emgr` with Docker.
 The `Dockerfile` in the project root defines **four deploy targets** and no
 default/unnamed final stage, so `--target` is required:
 
-| Target | Storage | OpenTelemetry / `/metrics` |
-|---|---|---|
-| `fs_deploy` | local filesystem | no |
-| `fs_otel_deploy` | local filesystem | yes |
-| `s3_deploy` | S3 / MinIO | no |
-| `s3_otel_deploy` | S3 / MinIO | yes |
+| Target           | Storage          | OpenTelemetry / `/metrics` |
+| ---------------- | ---------------- | -------------------------- |
+| `fs_deploy`      | local filesystem | no                         |
+| `fs_otel_deploy` | local filesystem | yes                        |
+| `s3_deploy`      | S3 / MinIO       | no                         |
+| `s3_otel_deploy` | S3 / MinIO       | yes                        |
 
 `healthcheck` (the binary the image's own `HEALTHCHECK` runs) is built into
 all four automatically.
@@ -36,9 +36,10 @@ The builder stage is pinned by digest to a **Debian 12 ("bookworm")** Rust
 image, and the runtime stage to `gcr.io/distroless/cc-debian12` - on
 purpose, and they must move together. A previous version of this Dockerfile
 used a Debian 13 ("trixie") builder (glibc 2.41) against this same
-bookworm-based runtime (glibc 2.36); the `s3` build's native C dependency
-(`aws-lc-sys`) referenced `GLIBC_2.38` symbols, and the resulting image
-built cleanly, pushed successfully, and then died instantly on start with:
+bookworm-based runtime (glibc 2.36); the `s3` build's native C dependency at
+the time (`aws-lc-sys`) referenced `GLIBC_2.38` symbols, and the resulting
+image built cleanly, pushed successfully, and then died instantly on start
+with:
 
 ```text
 version 'GLIBC_2.38' not found
@@ -49,34 +50,40 @@ without ever running one - see the "run every built image before pushing
 it" fix (`.github/workflows/build.yml`) that closed that gap. `local_fs`
 survived only by luck (it happens not to touch the symbols in question).
 
-If you ever need to bump either base image, bump both in lockstep and
-actually run the resulting image before merging - don't rely on CI's
-static checks to catch a glibc mismatch, they won't.
+`aws-lc-sys` is gone (#134 replaced it with the pure-Rust `rustls-graviola`
+crypto provider), so that specific trigger no longer exists - nothing left
+in the dependency graph compiles C, and nothing reaches for a glibc symbol
+the way `aws-lc-sys` did. The rule itself still stands regardless: it was
+never really about `aws-lc-sys` specifically, the Rust `std` binary links
+the builder's glibc either way. If you ever need to bump either base image,
+bump both in lockstep and actually run the resulting image before merging -
+don't rely on CI's static checks to catch a glibc mismatch, they won't.
 
-### Native codec build tools - builder-only, runtime image is unchanged
+### No native build tools - `emgr` has no C or C++ dependencies
 
-The four native codec libraries this service links against - `mozjpeg`
-(JPEG), `libwebp` (WebP), and `libavif` + AOM + dav1d (AVIF encode/decode) -
-are all built from source, as part of the normal `cargo build`, by their
-respective `*-sys` crates' own `build.rs`. That needs real build tooling
-present in the **builder** stage only:
+Every image codec this service links against - JPEG (`jpeg-decoder`/
+`jpeg-encoder`), WebP (`vaam-image-webp`), and AVIF encode/decode
+(`ravif`/`avif-decode`) - is pure Rust, built as part of the normal `cargo
+build` with no C compiler, assembler, or meta build system involved. This
+used to be the opposite: `mozjpeg` (JPEG), the `webp` crate (WebP,
+libwebp), and `libavif-sys` (AVIF, vendoring libavif + AOM + dav1d) each
+built vendored C source through their own `*-sys` crates' `build.rs`,
+needing `nasm` (libjpeg-turbo's x86_64 SIMD path), `cmake`
+(`libavif-sys`/`libaom-sys`), and `meson`+`ninja-build` (`libdav1d-sys`)
+installed in the builder stage. #134 removed the apt layer that installed
+those tools entirely - there's nothing to install any more, on any
+platform this Dockerfile targets.
 
-- `nasm` - `mozjpeg-sys` needs it to build libjpeg-turbo's x86_64 SIMD
-  paths (not needed on aarch64, but CI also builds `linux/amd64`, so it's
-  installed unconditionally).
-- `cmake` - `libavif-sys`/`libaom-sys` build `libavif`/AOM through it.
-- `meson` + `ninja-build` - `libdav1d-sys` builds dav1d through them.
-
-All four end up **statically linked into the compiled binary** - the
-builder never installs a runtime package for any of them (no
-`libjpeg-turbo8`, `libwebp7`, `libaom3`, `libdav1d7`, ...), and the
-`gcr.io/distroless/cc-debian12` runtime stage below only ever `COPY
---from=`s the compiled `emgr`/`healthcheck` binaries, never a shared
-library. This is why the runtime image's own shape (base, size, contents)
-is unaffected by any of this: none of the four `deploy` stages, the
-`base_deploy` they build on, or the runtime `HEALTHCHECK`/`ENTRYPOINT`
-setup needed any change for #63/#66/#67/#68 to land - only the builder
-stage's `apt-get install` line and the Rust dependency graph did.
+A `no-native-deps` CI job now guards this: it fails the build if any
+dependency reintroduces a native (`-sys`) library, so a future dependency
+bump that silently pulls C back in gets caught in CI instead of surfacing
+as a missing build tool in this Dockerfile. The runtime image's own shape
+(base, size, contents) was already unaffected by which codec libraries the
+builder linked - none of the four `deploy` stages, the `base_deploy` they
+build on, or the runtime `HEALTHCHECK`/`ENTRYPOINT` setup needed any
+change for #63/#66/#67/#68 (when the codecs were still native) or for #134
+(now that they aren't) - only the builder stage's `apt-get install` line
+(now removed entirely) and the Rust dependency graph did.
 
 ## Running the container
 

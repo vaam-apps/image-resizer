@@ -52,53 +52,202 @@ name = "pipeline"
 harness = false
 
 [dependencies]
-mimalloc = "0.1"
-
 axum = { version = "0.8", features = ["tracing", "tokio", "macros"] }
-axum-otel-metrics = { version = "0.11" }
+axum-otel-metrics = { version = "0.14" } # opentelemetry ^0.32, see the tracing-opentelemetry comment
 axum-tracing-opentelemetry = { version = "0.39" }
-tower-http = { version = "0.6", features = ["compression-full", "cors"] }
+# NOT "compression-full" (C-dependency removal): that feature is gzip+brotli+deflate+zstd,
+# and the zstd arm is the only one that is not pure Rust - it resolves to
+# `zstd-sys`, which compiles the C zstd library from source. gzip/deflate
+# go through flate2's default `miniz_oxide` backend and brotli through the
+# pure-Rust `brotli` crate, so naming the other three explicitly keeps every
+# content-encoding this service actually negotiates while dropping the C
+# dependency. Listing them individually rather than using the umbrella
+# feature is also what stops a future tower-http from silently
+# reintroducing zstd under `compression-full`.
+tower-http = { version = "0.6", features = [
+    "compression-gzip",
+    "compression-br",
+    "compression-deflate",
+    "cors",
+] }
 
 tokio = { version = "1", features = ["full"] }
 
-reqwest = { version = "0.13", features = ["json", "stream", "http2", "gzip"] } # Optimized HTTP client
-# default-features = false (#67/#68): `image`'s own `default` feature set
-# pulls in `default-formats`, which includes `avif` (ravif/rav1e) among
-# many formats this crate never uses (bmp/dds/exr/ff/hdr/ico/pnm/qoi/tga/
-# tiff) - `features = [...]` alone is *additive* to defaults, not a
-# replacement for them, so the explicit "jpeg"/"png"/"webp"/"gif" list
-# below was never actually narrowing anything before this change; every
-# one of those extra formats (plus `ravif`/`rav1e`, replaced by
-# `libavif-sys` - see that dependency's own comment) was still being
-# compiled in regardless. `rayon` (also part of `default`) is dropped too:
-# nothing in this crate's code calls an `image`-crate API gated behind it.
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] } # gif for animation groundwork
-# AVIF encode+decode (#67/#68): dropped `image`'s own "avif" feature
-# (ravif/rav1e, encode-only, no AVIF *decode* at all - see the `ImageFormat`
-# doc comment in src/models/params.rs) in favour of `libavif-sys`, which
-# covers both directions through one dependency - real libavif (vendored C
-# source, built from source via `cmake`, statically linked) with AOM
-# (encode) and dav1d (decode) as its only compiled-in codecs. See
-# src/services/image/avif_codec.rs's own module doc comment for why this
-# crate over the alternatives evaluated (`avif-rs` downloads prebuilt
-# binaries from a third-party GitHub release at build time - rejected as a
-# supply-chain regression; the high-level `libavif` crate has no EXIF-write
-# API), and why AOM only, not AOM+SVT-AV1 (no crates.io libavif binding
-# wires SVT-AV1 into its build script).
-libavif-sys = { version = "0.17", default-features = false, features = ["codec-aom", "codec-dav1d"] }
+# `default-features = false` + `rustls-no-provider` (C-dependency removal): reqwest's default
+# `rustls` feature expands to `__rustls-aws-lc-rs`, which hardwires
+# `aws-lc-rs`/`aws-lc-sys` - a large C and assembly codebase - as rustls's
+# crypto provider. `rustls-no-provider` gives the same rustls stack with no
+# provider compiled in; `main.rs` installs the pure-Rust Graviola provider as
+# the process-wide default instead. This makes that installation
+# load-bearing: with no default provider installed, reqwest panics when a
+# Client is built, which is why `install_crypto_provider()` runs first thing
+# in `main`, before anything can construct one.
+# reqwest's `zstd` feature stays off for the same reason as tower-http's.
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "stream",
+    "http2",
+    "gzip",
+    "rustls-no-provider",
+] }
+# default-features = false (#67/#68, still true): `image`'s own `default`
+# feature set pulls in `default-formats` - bmp/dds/exr/ff/hdr/ico/pnm/qoi/tga/
+# tiff, none of which this crate handles - plus `rayon`, which nothing here
+# calls. `features = [...]` is *additive* to defaults rather than a
+# replacement, so the explicit list below only narrows anything with
+# `default-features = false` alongside it.
+#
+# `webp` is deliberately NOT in this list (C-dependency removal). `image` would satisfy it with
+# its own copy of `image-webp`, whose released version encodes losslessly only;
+# WebP in this service goes through the `vaam-image-webp` fork below instead,
+# in both directions, so that exactly one WebP implementation is linked in.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif"] } # gif for animation groundwork
+
+# WebP (C-dependency removal): replaces the `webp` crate, which bound libwebp (C).
+#
+# There is no published pure-Rust lossy WebP encoder. `image-webp` - the crate
+# `image` itself uses - encodes lossless only as of its current 0.2.4 release,
+# and lossless WebP runs roughly 5-12x larger than lossy on photographic
+# content, which would make the format useless for this service's main job.
+#
+# Upstream's `main` branch does have a working lossy VP8 encoder (image-rs/
+# image-webp#161, #164, #172); it simply has not been cut into a release. This
+# fork tracks that branch so the dependency is a revision this org controls
+# rather than a floating upstream SHA. Pinned by `rev`, not `branch`: an
+# unreleased encoder moving under us is exactly the failure this pin prevents.
+#
+# Temporary by construction - when upstream releases lossy encoding, this
+# should go back to the crates.io crate and the fork should be archived.
+vaam-image-webp = { git = "https://github.com/vaam-apps/vaam-image-webp", rev = "7feed60" }
+
+# AVIF (C-dependency removal): `libavif-sys` is gone. It vendored and compiled three C
+# libraries from source - libavif itself, AOM for encode, dav1d for decode -
+# needing cmake, meson, ninja and nasm in every build image. Replaced by one
+# pure-Rust crate per direction:
+#
+# - encode: `ravif`, wrapping `rav1e`. ravif already declares rav1e with
+#   `default-features = false`, and rav1e's `asm` feature (which pulls
+#   `nasm-rs` *and* `cc`) is in its *default* set - so this needs neither NASM
+#   nor a C compiler, with nothing to configure here.
+# - decode: `avif-decode`, wrapping `rav1d` (the Rust port of dav1d) plus
+#   `avif-parse` for the container. Preferred over depending on `rav1d`
+#   directly, whose public surface is still dav1d's C-shaped API, where
+#   avif-decode offers a plain `from_avif` -> `to_image` Rust interface.
+#
+# See `src/services/image/avif_codec.rs` for the measured cost of this swap
+# against the AOM encoder it replaces.
+#
+# `default-features = false` on ravif is load-bearing and easy to get wrong.
+# ravif's own `default` is `["asm", "threading"]`, and its `asm` feature is
+# `["rav1e/asm"]` - which switches rav1e's assembly back ON even though ravif
+# declares rav1e with `default-features = false`. Reading only rav1e's
+# dependency line suggests this crate is already assembler-free; it is not.
+# rav1e's `asm` pulls `nasm-rs` AND `cc`, so leaving ravif's defaults on means
+# a C toolchain and NASM in every build image. `threading` is kept - it is
+# rayon, pure Rust, and AVIF encode is slow enough to want it.
+ravif = { version = "0.13", default-features = false, features = ["threading"] }
+# This org's fork of kornelski/avif-decode, for one reason: rav1d's default
+# features include `asm`, whose build script assembles `.S` with a C compiler
+# and `.asm` with NASM on x86_64. Upstream avif-decode turns that off only for
+# non-x86 targets - and even there as a workaround for a rav1d packaging bug
+# (memorysafety/rav1d#1449), not as a policy - so an x86_64 build needs a
+# toolchain this project's images no longer ship.
+#
+# It has to be fixed in the dependency's own manifest: Cargo feature
+# unification is additive, so declaring `rav1d = { default-features = false }`
+# here would NOT switch off what avif-decode already turned on. That is the
+# whole reason this is a fork rather than a feature line.
+#
+# Trade-off, stated rather than hidden: dav1d's assembly is a large part of why
+# it is fast, and this gives that up on x86_64. It has not been benchmarked on
+# x86_64 hardware. aarch64 was already running asm-free upstream.
+#
+# `default-features = false` additionally drops the `binary` feature, which
+# exists for the crate's bundled CLI and pulls `lodepng` that nothing here
+# calls. The Rust lib target is still `avif_decode`, so call sites are
+# unchanged. Retire this fork if upstream gains a feature flag for rav1d's asm.
+vaam-avif-decode = { git = "https://github.com/vaam-apps/vaam-avif-decode", rev = "b938566", default-features = false }
+# Container parsing, used directly by `avif_codec::peek_dimensions` to read
+# dimensions from the AV1 sequence header without decoding a frame.
+# `avif-decode` offers no way to get dimensions short of a full rav1d decode,
+# so the pre-decode resolution guard - which exists to reject an oversized
+# image *before* paying to decode it - cannot be built on avif-decode alone.
+# Already in the graph transitively at this exact version via avif-decode, so
+# naming it directly adds no resolution risk.
+avif-parse = "2"
+# Pixel-buffer types appearing in ravif's and avif-decode's public signatures.
+rgb = "0.8"
+imgref = "1.12"
+
+# JPEG (C-dependency removal): replaces `mozjpeg`, which bound mozjpeg/libjpeg-turbo (C, plus
+# NASM for its SIMD kernels) and covered both directions here.
+#
+# - encode: `jpeg-encoder`, pure Rust with its own AVX2 path. It carries the
+#   APIs the mozjpeg path relied on - `set_progressive`,
+#   `set_quantization_tables`, and `add_app_segment` for the raw APP1/APP2
+#   markers EXIF and ICC are written through. What it does not implement is
+#   trellis quantisation, so JPEGs get measurably larger at matched quality;
+#   `ImageService::encode_jpeg` records the number.
+# - decode: `jpeg-decoder`, for one specific reason - `Decoder::scale()`, the
+#   DCT-scaled decode (1/8, 1/4, 1/2) that lets a downscale request skip
+#   decoding at full resolution. `image` 0.25 decodes JPEG through `zune-jpeg`,
+#   which is faster but exposes no scaled-decode API at all, so dropping to it
+#   would silently delete that optimisation. `jpeg-decoder` is in maintenance
+#   mode upstream; it is depended on here for an API that is not going to
+#   change rather than for ongoing development.
+jpeg-encoder = "0.7"
+jpeg-decoder = "0.3"
+
 num_cpus = "1.16" # CPU detection for optimal thread pool sizing
 bytes = "1.5" # Efficient byte handling
 futures = "0.3" # Stream processing utilities
 
-aws-config = { version = "1.6", optional = true, features = ["behavior-version-latest"] } # AWS SDK configuration (for MinIO)
-# default-features = false + explicit feature list (GH #56): aws-sdk-s3's own
-# `default` feature set pulls in BOTH TLS stacks at once - "rustls" (misleading
-# name; it actually means the *legacy* hyper-0.14/rustls-0.21/h2-0.3 connector,
-# vulnerable to RUSTSEC-2026-0258/0098/0099/0104) alongside "default-https-client"
-# (the modern hyper-1/rustls-0.23/h2-0.4 connector that is actually used at
-# runtime under BehaviorVersion::latest()). Dropping "rustls" removes the legacy
-# stack from the dependency graph entirely instead of merely leaving it unused.
-aws-sdk-s3 = { version = "1.90", optional = true, default-features = false, features = ["behavior-version-latest", "default-https-client", "http-1x", "rt-tokio", "sigv4a"] } # AWS S3 client (MinIO compatible)
+# default-features = false (C-dependency removal): aws-config is unused directly in this
+# codebase (`s3_handler.rs` builds `s3::config::Builder` by hand with static
+# MinIO credentials, never `aws_config::load_from_env()` or similar) but is
+# kept as a dependency per its own doc comment below. Its `default` feature
+# set pulls in "default-https-client" -> `aws-smithy-runtime/default-https-client`
+# -> `aws-smithy-http-client/rustls-aws-lc` - i.e. `aws-lc-rs`/`aws-lc-sys`
+# (C + assembly) - even though nothing here ever calls into aws-config at
+# runtime. Turning defaults off removes that pull with no functional change.
+aws-config = { version = "1.6", optional = true, default-features = false, features = ["behavior-version-latest"] } # AWS SDK configuration (for MinIO)
+# default-features = false + explicit feature list (GH #56, extended by the C-dependency removal):
+# aws-sdk-s3's own `default` feature set pulls in BOTH TLS stacks at once -
+# "rustls" (misleading name; it actually means the *legacy*
+# hyper-0.14/rustls-0.21/h2-0.3 connector, vulnerable to
+# RUSTSEC-2026-0258/0098/0099/0104) alongside "default-https-client" (the
+# modern hyper-1/rustls-0.23/h2-0.4 connector that is actually used at
+# runtime under BehaviorVersion::latest()). Dropping "rustls" removes the
+# legacy stack from the dependency graph entirely instead of merely leaving
+# it unused.
+#
+# "default-https-client" is ALSO dropped now (C-dependency removal): it resolves to
+# `aws-smithy-runtime/default-https-client` -> `aws-smithy-http-client/
+# rustls-aws-lc`, hardwiring `aws-lc-rs`/`aws-lc-sys` as the S3 client's TLS
+# crypto backend with no way to swap it via Cargo features alone (the other
+# built-in choices, `rustls-ring`/`rustls-aws-lc-fips`, are also C+assembly).
+# Without this feature, aws-sdk-s3 has no default HTTP client at all - it
+# does not build one implicitly, so `s3_handler.rs` MUST supply one via
+# `.http_client(...)`, which it does: a hand-built `aws-smithy-http-client`
+# connector running rustls on the same pure-Rust Graviola provider
+# `main::install_crypto_provider()` installs process-wide. See that
+# function's doc comment, and `s3_handler.rs::build_https_client()`.
+aws-sdk-s3 = { version = "1.90", optional = true, default-features = false, features = ["behavior-version-latest", "http-1x", "rt-tokio", "sigv4a"] } # AWS S3 client (MinIO compatible)
+# Direct dependency (C-dependency removal), even though aws-sdk-s3/aws-config also depend on
+# it transitively: `s3_handler.rs` calls into this crate's own `Builder` API
+# directly to construct the custom-crypto-provider HTTP client described
+# above, so it needs to be named here rather than only reached incidentally.
+# `default-features = false` + `__rustls` only: `__rustls` (despite the
+# leading-underscore "internal" naming convention - Cargo does not actually
+# restrict activating it from a downstream Cargo.toml) is the one feature
+# that compiles this crate's rustls-based connector - `dep:rustls`,
+# `dep:hyper-rustls`, `dep:tokio-rustls`, `default-client` - WITHOUT also
+# pulling in a specific crypto backend the way `rustls-aws-lc`/`rustls-ring`/
+# `rustls-aws-lc-fips` each do (every one of those three additionally sets
+# `rustls?/aws_lc_rs`, `rustls?/ring`, or `rustls?/fips`, respectively - the
+# exact thing being avoided). See `.cargo/config.toml` for the companion
+# `--cfg aws_sdk_unstable` flag this also requires.
+aws-smithy-http-client = { version = "1.3", optional = true, default-features = false, features = ["__rustls"] }
 
 envconfig = { version = "0.11" }
 derive_builder = { version = "0.20" }
@@ -122,25 +271,62 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-opentelemetry = { version = "0.29", optional = true }
-opentelemetry-otlp = { version = "0.29", optional = true, features = ["tokio", "metrics", "trace", "grpc-tonic", "gzip-tonic"] }
-opentelemetry_sdk = { version = "0.29", optional = true, features = ["tokio", "metrics", "rt-tokio", "trace"] }
-opentelemetry-prometheus = { version = "0.29", optional = true }
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", optional = true, features = ["tokio", "metrics", "trace", "grpc-tonic", "gzip-tonic"] }
+opentelemetry_sdk = { version = "0.32", optional = true, features = ["tokio", "metrics", "rt-tokio", "trace"] }
+opentelemetry-prometheus = { version = "0.32", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
+# The whole opentelemetry stack moves together, and this is why (#134).
+# `axum-tracing-opentelemetry` 0.39 - already pinned above before this change -
+# requires opentelemetry ^0.32 and tracing-opentelemetry ^0.33, while everything
+# else here was pinned at 0.29. Cargo resolved that by putting BOTH 0.29.1 and
+# 0.32.0 in the graph, which is not merely wasteful: `opentelemetry`'s globals
+# (tracer provider, propagator) are per-crate-version statics, so the axum layer
+# and this crate's own tracer were configuring two different pipelines.
+#
+# It surfaced as `SdkTracer: Tracer` unsatisfied - the SDK type came from 0.29
+# and the trait from 0.32 - which is why pinning tracing-opentelemetry *back* to
+# 0.30 made it compile without fixing anything. These versions track each other
+# one for one (tracing-opentelemetry 0.33 <-> opentelemetry 0.32), so they can
+# only be bumped as a set; a per-crate Dependabot bump will always split them.
 tracing-opentelemetry = { version = "0.33", optional = true }
 tracing = { version = "0.1", features = ["attributes"] }
 prometheus = { version = "0.14", optional = true }
 dashmap = "6"
 tower_governor = "0.8"
-webp = "0.3"
 hmac = "0.12"   # NOT 0.13: it needs digest 0.11, i.e. the sha2 0.11 generation the pin above deliberately refuses
 subtle = "2.6"
 base64 = "0.23"
 fast_image_resize = { version = "6.1", features = ["image"] }
-mozjpeg = "0.10"
+
+# rustls crypto provider (C-dependency removal). `rustls` is already in the graph via
+# reqwest; it is named here so the provider can be installed explicitly at
+# startup. `default-features = false` keeps reqwest's `rustls-no-provider`
+# choice from being undone - rustls's own default features would pull
+# `aws-lc-rs` straight back in, which is the entire thing being removed.
+#
+# Graviola is pure Rust (its assembly-derived routines are Rust `inline!`
+# from formally-verified s2n-bignum, not an external assembler step) and is
+# maintained by rustls's own author. It is young - its README says as much -
+# and it requires AES-NI/AVX2 on x86_64 or the ARMv8 crypto extensions on
+# aarch64, i.e. anything since roughly 2014. Both the Docker base image and
+# CI runners clear that bar; a build targeting older hardware would not.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }
+rustls-graviola = "0.4"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+# Perceptual metric for `examples/codec_report.rs`, which compares every output
+# format at matched DSSIM rather than at matched nominal quality - the latter
+# is meaningless across encoders. Dev-only; not linked into the service.
+dssim-core = "3.5"
+# Second perceptual metric for examples/codec_report.rs. DSSIM alone is not a
+# fair basis for cross-format comparison - see that file's `Metric` doc.
+ssimulacra2 = "0.5"
+
+[[example]]
+name = "codec_report"
+path = "examples/codec_report.rs"
 
 [profile.prod]
 inherits = "release"
@@ -174,5 +360,9 @@ otel = [
     "tracing-opentelemetry",
     "prometheus"
 ]
-s3 = ["aws-sdk-s3", "aws-config"]
+# `aws-smithy-http-client` is a *direct* dependency here, not just a
+# transitive one: dropping aws-sdk-s3's `default-https-client` feature
+# means the SDK builds no HTTP client of its own, so `s3_handler.rs`
+# constructs one itself and needs this crate by name.
+s3 = ["aws-sdk-s3", "aws-config", "aws-smithy-http-client"]
 in_memory = []

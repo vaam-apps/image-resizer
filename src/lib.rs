@@ -27,8 +27,19 @@ pub mod modules {
     /// dependencies of its own, so exposing it here does not drag the
     /// axum-dependent parts of `modules::utils` (`err`, `etag`) into the
     /// lib target.
+    ///
+    /// `crypto` is here for the same reason and on the same terms - it
+    /// depends only on `rustls-graviola`. It has to be reachable from the
+    /// lib target because `services::image` and `services::resize` build
+    /// real `reqwest::Client`s, which panic unless a rustls crypto provider
+    /// has been installed, and their tests compile as part of *this* crate,
+    /// not the binary. Leaving it out of this list is a confusing failure:
+    /// the module and its `mod` declaration both exist, and the error is
+    /// still "cannot find `crypto` in `utils`", because this restricted
+    /// re-declaration - not `modules/utils/mod.rs` - is what the lib sees.
     pub mod utils {
         pub mod cgroup;
+        pub mod crypto;
     }
 
     /// Exposed so `src/bin/benchmark.rs` can sign the URLs it generates and

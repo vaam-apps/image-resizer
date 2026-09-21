@@ -13,6 +13,14 @@ number at all in a project whose pitch is speed. What's below is limited to
 mechanisms you can read in the source and numbers you can reproduce with the
 commands given.
 
+The same discipline applies to #134, which replaced every C/C++ image codec
+(`mozjpeg`, the `webp` crate/libwebp, `libavif`/AOM/dav1d) and the global
+allocator (`mimalloc`) with pure-Rust equivalents. Every number in this
+document that was measured against one of the old C implementations is
+marked inline as `**TODO(re-measure)**` rather than carried forward or
+guessed at; re-measurement is tracked separately from this documentation
+pass.
+
 ## HTTP client configuration
 
 - **Connection pooling**: `reqwest::Client` reuses connections, with a
@@ -163,60 +171,127 @@ bounds *queued*, not in-flight, waste.
   kernel's ~17ms in `.bench-baseline/BASELINE.md`), with imperceptible
   quality difference (DSSIM 0.0000047-0.0000093 against the old kernel's
   output, same source).
-- **JPEG decode** goes through `mozjpeg`/libjpeg-turbo instead of the
-  `image` crate's `zune-jpeg` (#63 stage 2, extended by #67). Two paths:
+- **JPEG decode** goes through [`jpeg-decoder`](https://docs.rs/jpeg-decoder)
+  instead of `mozjpeg`/libjpeg-turbo (#134; #63 stage 2/#67 had put mozjpeg
+  there in the first place, replacing the `image` crate's `zune-jpeg`).
+  `jpeg-decoder` was picked over `image`'s own `zune-jpeg` for one specific
+  reason: `Decoder::scale()`. `zune-jpeg` is faster but exposes no
+  scaled-decode API at all, so decoding through it here would silently drop
+  the optimization below. Two paths:
   - **DCT-scaled decode**: when the requested output is a >=2x downscale,
     `select_jpeg_dct_scale` (`src/services/image/handler.rs`) picks the most
-    aggressive libjpeg DCT scale (`scale_num`/8, i.e. 1/2, 1/4, or 1/8) whose
-    decoded output is still >= the resize target, and decodes directly at
-    that resolution instead of decoding full-size and discarding most of the
-    data during resize. Measured 2.21x faster for a 4K source to a small
-    thumbnail (26.21ms vs 58.03ms for full decode + resize).
-  - **Full-size mozjpeg decode**, otherwise - as of #67, this replaced the
-    `image`-crate/`zune-jpeg` decode for *every* JPEG, not just the
-    DCT-scaled case: `image` 0.25.10's `zune-jpeg` 0.5.x made its Huffman
-    bit-refill EOF check fallible where 0.4.x's was an infallible `bool`, a
-    real per-byte cost; mozjpeg's full-size decode measured ~1.5x faster
-    across a 36-photo real corpus regardless of downscale ratio.
-  - Either path falls back to the `image`-crate decoder on any mozjpeg
-    failure (including a caught panic) rather than failing the request.
-- **JPEG encode** goes through `mozjpeg::Compress` instead of
-  `image::codecs::jpeg::JpegEncoder` (#76) - the `image` crate's encoder has
-  no progressive-mode switch and hardcodes 4:2:2 chroma subsampling, so
-  neither could be exposed through it. Two profiles:
-  - **`JCP_FASTEST`** (mozjpeg's `set_fastest_defaults`) for the default,
-    non-progressive path - ~5% smaller and 3-4x *faster* than the old
-    `image`-crate encoder, and scores a better mean DSSIM than mozjpeg's own
-    max-compression profile at the same nominal quality (trellis
-    quantisation trades fidelity for size, not the other way round).
-  - **`JCP_MAX_COMPRESSION`** (mozjpeg's own default profile, which turns on
-    trellis quantisation unconditionally) only for explicitly-requested
-    progressive output (`jpgo:1:...`) - ~12% smaller than the old encoder
-    but 3-8x its encode time, so it is charged only to requests that opt in.
-    Constructing a `mozjpeg::Compress` without calling
-    `set_fastest_defaults` selects this profile by default, which very
-    nearly shipped as the default for *every* JPEG encode (a +16% pipeline
-    regression) - see `.bench-baseline/BASELINE.md`'s "JPEG encoder
-    cutover" section for the full trap.
-- **WebP** goes through the [`webp`](https://docs.rs/webp) crate (real
-  libwebp) instead of the `image` crate's lossless-only WebP encoder (#32,
-  #60) - lossy and lossless static images via `webp::Encoder`, animated WebP
-  via `webp::AnimEncoder`/`AnimFrame`. **Decode** (#66) also goes through
-  libwebp (`ImageService::libwebp_decode`) instead of `image-webp`'s
-  pure-Rust decoder - measured 2.24x faster median on the Kodak corpus (24
-  real photos), DSSIM delta 0.00000000 (pixel-identical) against the old
-  decoder. See `adr/0001-image-engine.md` and `adr/0003-webp-measurement.md`
-  for why and how the encode side was measured.
-- **AVIF** is now encode *and* decode (#67/#68), via `libavif`
-  (`src/services/image/avif_codec.rs`) - AOM for encode (replacing the
-  pure-Rust `ravif`/`rav1e` encoder `adr/0004-avif-measurement.md` measured)
-  and dav1d for decode (previously unsupported entirely). See that module's
-  own doc comment for the codec/dependency choice, and
-  `adr/0005-avif-measurement-libavif-mozjpeg.md` for the re-measurement
-  against the encoders actually shipped. `adr/0005` supersedes `adr/0004`
-  on both axes - `0004` compared `ravif` against `image`'s JPEG encoder, and
-  production now uses neither - so `0004`'s figures are void rather than
-  merely dated.
+    aggressive DCT scale `jpeg-decoder`'s `Decoder::scale()` exposes (1/2,
+    1/4, or 1/8) whose decoded output is still >= the resize target, and
+    decodes directly at that resolution instead of decoding full-size and
+    discarding most of the data during resize. This is the same mechanism
+    mozjpeg provided; the win it measured (2.21x faster for a 4K source to a
+    small thumbnail, 26.21ms vs 58.03ms for full decode + resize) was
+    specific to mozjpeg's DCT-scaled decode. Re-measured against
+    `jpeg-decoder`'s `scale()` on a 2200x1100 photo: full-size 8.99 ms,
+    1/2 5.54 ms, 1/4 4.26 ms, 1/8 4.06 ms. So the win survives the swap but
+    flattens out - most of it is realised by 1/4, and 1/8 buys almost
+    nothing more, because the fixed per-image costs stop being the dominant
+    term. `scale()` also rounds up the same way libjpeg does (1100 at 1/8
+    reports 138, not 137), which is what the scaled-dimension test pins.
+  - **Full-size decode**, otherwise. Under mozjpeg this path (extended by
+    #67 to cover *every* JPEG, not just the DCT-scaled case, after `image`
+    0.25.10's `zune-jpeg` 0.5.x made its Huffman bit-refill EOF check
+    fallible where 0.4.x's was an infallible `bool` - a real per-byte cost)
+    measured ~1.5x faster than `zune-jpeg` across a 36-photo real corpus
+    regardless of downscale ratio. Whether `jpeg-decoder`'s full-size decode
+    beats `zune-jpeg` by a similar margin is unmeasured:
+    **TODO(re-measure)**.
+  - Either path falls back to the `image`-crate (`zune-jpeg`) decoder on any
+    `jpeg-decoder` failure (including a caught panic) rather than failing
+    the request.
+- **JPEG encode** goes through [`jpeg-encoder`](https://docs.rs/jpeg-encoder),
+  a pure-Rust encoder with its own AVX2 path, instead of `mozjpeg::Compress`
+  (#134; #76 had put mozjpeg there in the first place, replacing
+  `image::codecs::jpeg::JpegEncoder`, whose encoder has no progressive-mode
+  switch and hardcodes 4:2:2 chroma subsampling). `jpeg-encoder` carries the
+  APIs the mozjpeg path relied on - `set_progressive`,
+  `set_quantization_tables`, and `add_app_segment` for the raw APP1/APP2
+  markers EXIF and ICC are written through - so the `jpgo:` option surface
+  is unchanged. What it does *not* implement is trellis quantisation, so
+  output was *expected* to be measurably larger than mozjpeg's at matched
+  quality. Measured across all 24 Kodak photographs at matched DSSIM, it is
+  **at parity: 0.995x / 1.000x / 1.000x**.
+
+  The expectation was wrong for a specific and easily-repeated reason: it
+  compared against `mozjpeg::Compress` at its own defaults, which enable
+  trellis, while this service's non-progressive path set `JCP_FASTEST`,
+  under which `trellis_quant = (compress_profile == JCP_MAX_COMPRESSION)` is
+  false. There was no trellis on the default path to lose. The trellis cost
+  is real but lands only on the opt-in progressive path, where output is
+  1.32x-2.01x larger. See `adr/0006-pure-rust-codecs.md`.
+
+  mozjpeg's two-profile split no longer applies - `jpeg-encoder` is one
+  encoder, not a fastest/max-compression pair. Concretely, progressive and
+  baseline now cost about the same (2.84 ms and 2.83 ms on the `photo`
+  fixture) where mozjpeg's progressive profile cost 24.76 ms against its
+  baseline 0.92 ms. That is not a free 9x: the progressive path is doing far
+  less work and ships a 1.32x-2.01x larger file for it. The old numbers
+  below are void rather than dated (was:
+  mozjpeg's `JCP_FASTEST` default profile, used for non-progressive output,
+  measured ~5% smaller and 3-4x faster than the pre-#76 `image`-crate
+  encoder, with a better mean DSSIM than mozjpeg's own max-compression
+  profile at the same nominal quality; `JCP_MAX_COMPRESSION`, mozjpeg's own
+  default profile and used only for explicitly-requested progressive output
+  `jpgo:1:...`, measured ~12% smaller than the pre-#76 encoder but 3-8x its
+  encode time - a ~19x-baseline cost by the time this document's earlier
+  revisions summarized it). One piece of that history is worth keeping for
+  what it warns future encoder swaps about: constructing a
+  `mozjpeg::Compress` without calling `set_fastest_defaults` selected the
+  max-compression profile by default, which very nearly shipped as the
+  default for *every* JPEG encode under mozjpeg (a +16% pipeline
+  regression) - see `.bench-baseline/BASELINE.md`'s "JPEG encoder cutover"
+  section for the full trap. `jpeg-encoder` has no such implicit-default
+  footgun since there is only one profile, but the general lesson (check an
+  encoder's *actual* default construction path, not just its name) still
+  applies to any future encoder swap.
+- **WebP** static-image encode and decode go through
+  [`vaam-image-webp`](https://github.com/vaam-apps/vaam-image-webp) (#134)
+  instead of the [`webp`](https://docs.rs/webp) crate (real libwebp via
+  FFI), which itself had replaced the `image` crate's lossless-only WebP
+  encoder (#32, #60) and the `image-webp` decoder (#66). `vaam-image-webp`
+  is this org's fork of `image-rs/image-webp`, tracking its unreleased
+  lossy VP8 encoder branch (upstream image-webp#161/#164/#172) rather than
+  a released version, because no published crate encodes lossy WebP in pure
+  Rust as of this writing - `image-webp`'s current release is lossless
+  only, and lossless WebP runs roughly 5-12x larger than lossy on
+  photographic content, which would make the format useless for this
+  service's main job. The fork is pinned by `rev`, not `branch`, so an
+  unreleased encoder moving under this project is exactly the failure the
+  pin prevents; it is temporary by construction and should be dropped in
+  favor of the crates.io release once upstream cuts one. Whether
+  `vaam-image-webp` matches real libwebp's encode/decode speed and output
+  size - the numbers this section used to carry (encode via the `webp`
+  crate; decode measured 2.24x faster median on the Kodak corpus, 24 real
+  photos, against `image-webp`, DSSIM delta 0.00000000 against the old
+  decoder) - is unmeasured against this new implementation:
+  **TODO(re-measure)**. See `adr/0001-image-engine.md` and
+  `adr/0003-webp-measurement.md` for how the *previous* encode-side
+  comparison was run; that methodology, not its numbers, is what a
+  re-measurement should reuse.
+- **AVIF** encode and decode (#67/#68 first added the pair) go through
+  pure-Rust crates instead of `libavif` (AOM + dav1d, vendored C, built via
+  `cmake`) (#134): [`ravif`](https://docs.rs/ravif) (wrapping `rav1e`) for
+  encode, [`avif-decode`](https://docs.rs/avif-decode) (wrapping `rav1d`,
+  the Rust port of `dav1d`) for decode. `avif-decode` was preferred over
+  depending on `rav1d` directly because `rav1d`'s public surface is still
+  dav1d's C-shaped API, where `avif-decode` offers a plain `from_avif` ->
+  `to_image` Rust interface. This is, on the encode side, a return to a
+  pure-Rust encoder after `adr/0004-avif-measurement.md` and
+  `adr/0005-avif-measurement-libavif-mozjpeg.md` record the earlier
+  evaluation that moved encode *from* `ravif`/`rav1e` *to* `libavif`/AOM -
+  those ADRs are the historical record of that call and are not revised
+  here. #134's motivation is dependency composition (removing every C/C++
+  dependency from the build), not a re-run of the perceptual-quality
+  comparison those ADRs made, so whether the AOM-vs-`rav1e`
+  quality/speed tradeoff they measured still holds against the `rav1e`
+  release in use today is unmeasured: **TODO(re-measure)**. See the
+  `ravif`/`avif-decode` dependency comments in `Cargo.toml` for the current
+  codec/dependency choice.
 - **Upscale guard, off by default** (#36): a request naming output
   dimensions larger than the source image is capped to the source's
   dimensions per axis unless the request opts in via `enlarge: true`
@@ -281,7 +356,10 @@ explicitly (as the Dockerfile does for the shipped binaries).
   (`src/modules/utils/cgroup.rs`, #44), not `num_cpus::get()` directly, so a
   CPU-quota-limited container sizes the runtime for its actual quota rather
   than the host's full core count.
-- **Allocator**: `mimalloc` as the global allocator (`src/main.rs`).
+- **Allocator**: the platform `System` allocator (`src/main.rs`), replacing
+  `mimalloc`/`libmimalloc-sys` (#134, dropped along with every other C/C++
+  dependency). No throughput/latency comparison between the two has been
+  run for this workload: **TODO(re-measure)**.
 
 ## Benchmarking
 
@@ -297,10 +375,12 @@ Other benches cover the pipeline stages and cache-key hashing in isolation:
 `cargo bench --features local_fs --bench decode|resize|encode|cache_key`.
 
 This document does not embed a snapshot of those numbers - they move too
-often (five documented, code-verified changes since this document was first
+often (six documented, code-verified changes since this document was first
 written: the `fast_image_resize` kernel swap, DCT-scaled JPEG decode, wave-2
-features, the JPEG encoder cutover, and full-size mozjpeg decode) for a
-copy pasted here to stay honest for long. **`.bench-baseline/BASELINE.md`
+features, the JPEG encoder cutover, full-size mozjpeg decode, and #134's
+swap of every codec - JPEG, WebP, AVIF - plus the allocator to pure-Rust
+implementations) for a copy pasted here to stay honest for long.
+**`.bench-baseline/BASELINE.md`
 is the current, single source of truth for every criterion number**,
 including the full per-filter/per-format table, the observation that
 upscaling runs ~8x slower than the equivalent downscale (what motivates the
@@ -314,12 +394,16 @@ single-operation micro-benchmarks inside the Rust binary; they do not cover
 routing, source fetch, storage round trips, or the redirect hop. The full
 three-way comparison against imgproxy (`bench-imgproxy/`, a k6 harness) is
 also tracked in `.bench-baseline/BASELINE.md`, and is summarized honestly in
-the [README's Performance section](README.md#performance) - emgr is
-measurably slower than imgproxy on a cold cache (~3.48x on p50, ~2.86x less
-throughput) and measurably faster on a warm one (imgproxy has no result
-cache of its own, so that comparison is architectural, not a processing-speed
-win), which is the same architectural trade-off seen from two sides, not two
-independent facts.
+the [README's Performance section](README.md#performance). That cold-cache
+comparison ran the full processing pipeline through the old C codecs, so the
+ratio it reported is void after #134: **TODO(re-measure)** (was:
+~3.48x slower on p50, ~2.86x less throughput than imgproxy on a cold cache).
+emgr is still expected to be measurably faster than imgproxy on a warm
+cache regardless of that re-measurement - imgproxy has no result cache of
+its own, so that comparison is architectural (cache hit vs. full
+reprocessing), not a processing-speed win, and doesn't run through any of
+the codecs #134 touched. The cold and warm numbers are the same
+architectural trade-off seen from two sides, not two independent facts.
 
 No throughput/memory/CPU-utilization multiplier is claimed anywhere in this
 document that doesn't trace to a command and a number in

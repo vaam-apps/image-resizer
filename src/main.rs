@@ -14,10 +14,11 @@ mod models;
 mod modules;
 mod services;
 
-use mimalloc::MiMalloc;
-
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+// mimalloc/libmimalloc-sys (C) is gone (#134); this now runs on Rust's
+// default `System` allocator by simple absence of a `#[global_allocator]`
+// override. Deliberately not claiming a throughput result here, in either
+// direction - nobody has measured System vs mimalloc on this workload since
+// the swap. TODO(re-measure): System vs mimalloc throughput.
 
 /// Default graceful-shutdown drain deadline (#42): must be comfortably
 /// shorter than a typical orchestrator termination grace period - 30s is
@@ -32,6 +33,13 @@ const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 20;
 /// accept literals, so making this runtime-configurable means building the
 /// runtime by hand instead of via `#[tokio::main]`.
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Load-bearing, and must run first (#134): see `install_crypto_provider`'s
+    // own doc comment for why. Ahead of even building the Tokio runtime, so
+    // there is no path - not a background task, not a request handler spun up
+    // before this line - that could reach a reqwest `Client` before rustls
+    // has a crypto provider to hand it.
+    install_crypto_provider()?;
+
     let worker_threads = std::env::var("TOKIO_WORKER_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -52,6 +60,34 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     runtime.block_on(async_main())
 }
+
+/// Installs Graviola as the process-wide default rustls crypto provider.
+///
+/// LOAD-BEARING (#134): `reqwest` (Cargo.toml) is built with
+/// `default-features = false` plus rustls's `rustls-no-provider` feature -
+/// deliberately, to keep `aws-lc-rs`/`aws-lc-sys` (a large C and assembly
+/// codebase, previously pulled in as rustls's default crypto backend) out of
+/// the dependency graph entirely. The cost of that choice is that rustls now
+/// ships with *no* crypto provider compiled in by default, and reqwest
+/// **panics** the instant a `Client` is built (`Client::new()` or
+/// `Client::builder().build()`) if no default provider has been installed
+/// process-wide first.
+///
+/// So this must run before the *first* reqwest `Client` is constructed
+/// anywhere in the process - which is why it is the first statement in
+/// `main()`, ahead of even building the Tokio runtime (see the call site).
+///
+/// `CryptoProvider::install_default` can succeed at most once per process; a
+/// second call anywhere would return `Err` without disturbing the provider
+/// already installed. That can't happen here since this is the only call
+/// site, but the `Result` is still handled explicitly and propagated with
+/// `?` rather than `.ok()`-ed away: a service that cannot do TLS has no
+/// business starting up and reporting itself healthy, so a failure here
+/// must abort startup loudly, not get silently swallowed.
+// Re-exported from the library so `main` and the test modules that build
+// real reqwest Clients share one implementation - see that module's doc
+// comment for why it does not live here.
+use modules::utils::crypto::install_crypto_provider;
 
 async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = EnvConfig::init_from_env()?;
@@ -240,12 +276,32 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
+    /// `cargo test` never runs `main()`, so `install_crypto_provider()`'s
+    /// call site never executes for these tests (#134) - but two of them
+    /// build a real `reqwest::Client`, which panics at construction if no
+    /// rustls crypto provider is installed process-wide (see that
+    /// function's doc comment for why). `Once` rather than a bare call:
+    /// `install_default` succeeds at most once per process, and `cargo
+    /// test` runs tests in parallel by default, so a second test reaching
+    /// this after the first would otherwise race `install_default` and get
+    /// back an `Err` it has no reason to treat as fatal - both callers want
+    /// the same outcome (Graviola installed), so the second call's result
+    /// is simply discarded rather than unwrapped.
+    fn ensure_crypto_provider_installed() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls_graviola::default_provider().install_default();
+        });
+    }
+
     /// #42: a request already in flight when the shutdown signal fires must
     /// still complete successfully, and once the signal has fired the
     /// server must stop accepting brand-new connections - draining, not
     /// hard-dropping.
     #[tokio::test]
     async fn graceful_shutdown_drains_in_flight_request_and_refuses_new_ones() {
+        ensure_crypto_provider_installed();
         let started = Arc::new(AtomicUsize::new(0));
         let completed = Arc::new(AtomicUsize::new(0));
 
@@ -283,7 +339,7 @@ mod tests {
         ));
 
         // Kick off a slow in-flight request without awaiting its completion.
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
         let in_flight = {
             let client = client.clone();
             let url = format!("http://{addr}/slow");
@@ -353,6 +409,7 @@ mod tests {
     /// telemetry) rather than hang forever.
     #[tokio::test]
     async fn graceful_shutdown_returns_even_if_drain_deadline_is_exceeded() {
+        ensure_crypto_provider_installed();
         let app = Router::new().route(
             "/forever",
             get(|| async {
@@ -376,7 +433,7 @@ mod tests {
             shutdown_signal,
         ));
 
-        let client = reqwest::Client::new();
+        let client = crate::modules::utils::crypto::test_http_client();
         let _in_flight = tokio::spawn({
             let url = format!("http://{addr}/forever");
             async move { client.get(url).send().await }
