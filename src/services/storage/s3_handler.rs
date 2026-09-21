@@ -10,7 +10,7 @@ use aws_sdk_s3::primitives::{ByteStream, DateTime, DateTimeFormat};
 use crate::services::storage::core::StorageBackend;
 
 /// Builds the HTTP/TLS connector `MinIOStorage::new_minio` hands to the S3
-/// SDK (C-dependency removal).
+/// SDK (#134).
 ///
 /// `aws-sdk-s3`'s own "default-https-client" Cargo feature has been dropped
 /// (see the dependency comment in Cargo.toml) precisely because its only
@@ -76,7 +76,7 @@ impl MinIOStorage {
             ))
             .region(s3::config::Region::new(region))
             .force_path_style(true) // Crucial for MinIO compatibility
-            .http_client(build_https_client()) // (C-dependency removal) see that fn's doc comment
+            .http_client(build_https_client()) // (#134) see that fn's doc comment
             .build();
 
         let s3_client = s3::Client::from_conf(s3_config);
@@ -238,7 +238,7 @@ mod tests {
     use super::*;
 
     /// `cargo test` never runs `main()`, so `main::install_crypto_provider()`
-    /// never executes for this test binary (C-dependency removal) - but `new_minio` now
+    /// never executes for this test binary (#134) - but `new_minio` now
     /// calls `build_https_client()`, which panics via `.expect()` if no
     /// rustls default crypto provider is installed. `s3_handler.rs` is
     /// compiled into both the `emgr` bin (via `main.rs`'s local module

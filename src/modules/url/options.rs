@@ -328,7 +328,7 @@ impl ProcessingOptions {
                 // {overshoot_deringing}:{optimize_scans}:{quant_table}`
                 // option (#76,
                 // <https://docs.imgproxy.net/usage/processing#jpeg-options>).
-                // Only the first two slots are implemented, and the C-dependency removal made
+                // Only the first two slots are implemented, and #134 made
                 // that more firmly true rather than less: the encoder behind
                 // `ImageService::encode_jpeg` is now the pure-Rust
                 // `jpeg-encoder`, which exposes progressive and subsampling

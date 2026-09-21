@@ -1,6 +1,8 @@
 # ADR 0006: Removing every C/C++ dependency, and what it costs
 
 - Status: **Accepted**, with measured regressions recorded below and open work listed.
+- Tracking: **#134** (epic). Follow-up work is #135-#141; each open question in
+  "Consequences" has an issue rather than living only here.
 - Date: 2026-09-20 (size, decode and cross-format figures corrected 2026-09-21)
 
 ## Context
@@ -443,17 +445,17 @@ Not measured, and honestly unknown:
 
 Open work, in rough order of value:
 
-1. **Re-tune `.auto` negotiation.** AVIF is 21-43% smaller than JPEG and WebP is now
+1. **Re-tune `.auto` negotiation** (#135). AVIF is 21-43% smaller than JPEG and WebP is now
    *larger* than JPEG, so the current preference order is actively costing bytes on every
    WebP delivery. This is the highest-value item and needs no codec work.
-2. Close the WebP gap: B_PRED 4x4 mode search, then trellis quantisation. Until then WebP
+2. Reduce WebP encode cost (#136) and apply the loop filter properly (#137). Until then WebP
    earns its place only for clients that accept it but not AVIF.
-3. Confirm rav1d-without-asm on x86_64.
+3. Confirm rav1d-without-asm on x86_64 (#138).
 4. JPEG decode is 2.4x slower and `jpeg-decoder` is in maintenance mode upstream. The
    faster `zune-jpeg` has no scaled-decode API at all, which is why it was not chosen — but
    a hybrid (zune for full-size decodes, `jpeg-decoder` only when DCT scaling applies) is
    worth measuring.
-5. Check in a fixed pre-encoded corpus so `decode/avif` and `decode/webp` become
+5. Check in a fixed pre-encoded corpus (#139) so `decode/avif` and `decode/webp` become
    comparable across encoder changes.
-6. Retire both forks when upstream releases lossy WebP encoding and a rav1d-asm feature
+6. Retire both forks (#141) when upstream releases lossy WebP encoding and a rav1d-asm feature
    flag.

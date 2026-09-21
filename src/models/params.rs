@@ -13,7 +13,7 @@
 ///   (`src/services/image/avif_codec.rs`). The history here runs in a
 ///   circle and is easy to misread: this crate originally encoded AVIF with
 ///   `ravif`/`rav1e` and could not decode it at all; #67/#68 moved both
-///   directions to `libavif` (AOM to encode, dav1d to decode); the C-dependency removal removed
+///   directions to `libavif` (AOM to encode, dav1d to decode); #134 removed
 ///   every C dependency and moved encode back to `ravif`/`rav1e`, with
 ///   decode now on `avif-decode`/`rav1d` - the Rust port of dav1d - so
 ///   decode support survives the return to pure Rust rather than regressing

@@ -8,7 +8,7 @@ startup checks that fail closed by design, to a working `/health` response.
 - A stable Rust toolchain. `Cargo.toml` sets `edition = "2024"`, which needs
   Rust 1.85 or newer; CI builds against whatever `dtolnay/rust-toolchain@stable`
   currently resolves to, so there's no lower pin to target beyond that.
-  Nothing else: `emgr` has no C or C++ dependencies (C-dependency removal), so there's no
+  Nothing else: `emgr` has no C or C++ dependencies (#134), so there's no
   native toolchain to install (`nasm`, `cmake`, `meson`, `ninja-build` used
   to be required here, for `mozjpeg-sys`/`libavif-sys`'s vendored C builds;
   a `no-native-deps` CI job now fails the build if any dependency

@@ -85,8 +85,8 @@ Corpus contents:
 | `photo_4k.jpg` | 3840x2160 | Gradient + per-pixel noise ("photo-like"), JPEG q90 |
 | `photo_1080p.jpg` | 1920x1080 | Same generator, JPEG q90 |
 | `photo_800x600.jpg` | 800x600 | Same generator, JPEG q90 |
-| `photo_1080p.webp` | 1920x1080 | Same pixel content as `photo_1080p.jpg`, re-encoded WebP q90 -- exercises WebP source decode (#66; via `vaam-image-webp` as of the C-dependency removal, previously real libwebp via FFI), previously untested by this harness |
-| `photo_1080p.avif` | 1920x1080 | Same pixel content again, AVIF q85 -- exercises AVIF source decode (#67; via `avif-decode`/`rav1d` as of the C-dependency removal, previously `libavif`/dav1d), previously untested by this harness |
+| `photo_1080p.webp` | 1920x1080 | Same pixel content as `photo_1080p.jpg`, re-encoded WebP q90 -- exercises WebP source decode (#66; via `vaam-image-webp` as of #134, previously real libwebp via FFI), previously untested by this harness |
+| `photo_1080p.avif` | 1920x1080 | Same pixel content again, AVIF q85 -- exercises AVIF source decode (#67; via `avif-decode`/`rav1d` as of #134, previously `libavif`/dav1d), previously untested by this harness |
 | `alpha_1024.png` | 1024x1024 | RGBA with a fully-transparent border whose RGB channels are garbage -- exercises alpha-flattening on PNG->JPEG/WebP conversion |
 | `flat_1024.png` | 1024x1024 | Single solid colour, compresses to ~4.5KB |
 
@@ -331,7 +331,7 @@ drags emgr's reported median down and roughly doubles emgr's apparent
 processes images faster. This produced a real, previously-reported error:
 emgr's cold-cache p50 read as "at parity" with imgproxy (22.87 vs 20.66 ms,
 per-request) when the true per-delivered-image figure was 75.81 vs 20.76 ms
-— 3.65x slower, not parity (measured under the old C codec stack, pre-the C-dependency removal:
+— 3.65x slower, not parity (measured under the old C codec stack, pre-#134:
 **TODO(re-measure)** — the methodology lesson about which metric to
 trust holds regardless of which codecs emgr links). See
 `.bench-baseline/BASELINE.md`'s 2026-08-21 section for the full before/after
@@ -409,7 +409,7 @@ ramp-up period muddying the numbers.
 Every valid combination of the 7 corpus fixtures, 3 target sizes
 (`300x300`, `640x480`, `1200x800` by default), and 4 output formats
 (`jpg`, `png`, `webp`, `avif` by default -- `avif` added so the harness
-exercises AVIF encode (#68; via `ravif`/`rav1e` as of the C-dependency removal, previously
+exercises AVIF encode (#68; via `ravif`/`rav1e` as of #134, previously
 `libavif`/AOM) in addition to the source-side WebP/AVIF decode the two new
 `photo_1080p.webp`/`photo_1080p.avif` fixtures above add; override with
 `FORMATS=jpg,png,webp` to reproduce a pre-AVIF run) is exercised within a
@@ -436,11 +436,11 @@ latency in every scenario's JSON report -- no separate run needed.
   does mean the two are not guaranteed to be encoding at the same visual
   quality target).
 - **WebP: fixed since this section was first written, then the implementation
-  changed again by the C-dependency removal.** `adr/0001` measured emgr's WebP as lossless-only
+  changed again by #134.** `adr/0001` measured emgr's WebP as lossless-only
   (~4.8x the equivalent JPEG). That was fixed when emgr started encoding
   lossy WebP through real libwebp (the `webp` crate), the same underlying
   encoder imgproxy uses, making the WebP column a fair comparison. As of
-  the C-dependency removal, WebP encode goes through `vaam-image-webp` instead (this org's fork
+  #134, WebP encode goes through `vaam-image-webp` instead (this org's fork
   of `image-rs/image-webp`, pure Rust, tracking its unreleased lossy VP8
   encoder) -- still lossy, so the comparison stays fair in kind, but
   whether it matches real libwebp's output size closely enough to keep the
@@ -454,7 +454,7 @@ latency in every scenario's JSON report -- no separate run needed.
   **TODO(re-measure)**. `adr/0001`'s AVIF figures have the same
   methodological flaw, were never re-measured against the `libavif`/AOM
   encoder `adr/0005` later shipped, and are further still from today's
-  `ravif`/`rav1e` implementation (C-dependency removal).
+  `ravif`/`rav1e` implementation (#134).
 
 Read the byte-size numbers as "what each engine produces by default today,"
 not "what each engine produces at an equivalent quality target" -- those
@@ -469,7 +469,7 @@ away. `emgr`'s fallback JPEG decode path -- `image`'s own `zune-jpeg` --
 has no equivalent: `adr/0001-image-engine.md` verified directly against
 `zune-jpeg`'s source that there is no public API for a DCT-domain scaled
 decode. (This is distinct from `emgr`'s primary JPEG decode path, which
-does DCT-scale via `jpeg-decoder`'s `Decoder::scale()` as of the C-dependency removal --
+does DCT-scale via `jpeg-decoder`'s `Decoder::scale()` as of #134 --
 `mozjpeg` provided the same capability before it -- chosen specifically
 for that API; see [Image engine](../README.md#image-engine). `zune-jpeg`
 is reached only as a fallback on a primary-decoder failure.) Neither path
@@ -521,7 +521,7 @@ section for the s3 numbers this unblocked.
 
 ### Validated: imgproxy vs. emgr (local_fs), cold cache, concurrency 2
 
-**TODO(re-measure).** This run predates the C-dependency removal: it measured emgr built
+**TODO(re-measure).** This run predates #134: it measured emgr built
 against the old C codec stack (`mozjpeg`, the `webp` crate/libwebp,
 `libavif`/AOM/dav1d). Every number in the table and the analysis below
 describes that implementation, not the current pure-Rust one

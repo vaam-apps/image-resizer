@@ -184,7 +184,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # The C-dependency removal took every C and C++ dependency out of this service: mozjpeg-sys
+      # #134 took every C and C++ dependency out of this service: mozjpeg-sys
       # (libjpeg-turbo), libavif-sys/libaom-sys/libdav1d-sys, libwebp-sys,
       # libmimalloc-sys, zstd-sys and aws-lc-sys are all gone, replaced by
       # pure-Rust crates. Nothing in the build compiles C, assembles NASM, or

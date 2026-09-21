@@ -370,10 +370,10 @@ looks like. Recognised extensions
 
 | Extension | Output format | Notes |
 |---|---|---|
-| `jpg` / `jpeg` | JPEG | Encoded via `jpeg-encoder` (not `image`'s built-in encoder) so `jpgo:`/`mb:` actually reach the encoder. Pure Rust — replaces `mozjpeg`/libjpeg-turbo as of the C-dependency removal. |
+| `jpg` / `jpeg` | JPEG | Encoded via `jpeg-encoder` (not `image`'s built-in encoder) so `jpgo:`/`mb:` actually reach the encoder. Pure Rust — replaces `mozjpeg`/libjpeg-turbo as of #134. |
 | `png` | PNG | Fixed `CompressionType::Best`; no continuous quality knob (`fq:png:N` is rejected at parse time). |
-| `webp` | WebP | Decoded and encoded via `vaam-image-webp`, this org's fork of `image-rs/image-webp`. Pure Rust — replaces the `webp` crate/libwebp as of the C-dependency removal. `webpo:lossless` for lossless. |
-| `avif` | AVIF | **Encode and decode.** `ravif` (wrapping `rav1e`) for encode, `avif-decode` (wrapping `rav1d`) for decode (`src/services/image/avif_codec.rs`). Pure Rust — replaces `libavif`/AOM/dav1d as of the C-dependency removal. See the AVIF note below. |
+| `webp` | WebP | Decoded and encoded via `vaam-image-webp`, this org's fork of `image-rs/image-webp`. Pure Rust — replaces the `webp` crate/libwebp as of #134. `webpo:lossless` for lossless. |
+| `avif` | AVIF | **Encode and decode.** `ravif` (wrapping `rav1e`) for encode, `avif-decode` (wrapping `rav1d`) for decode (`src/services/image/avif_codec.rs`). Pure Rust — replaces `libavif`/AOM/dav1d as of #134. See the AVIF note below. |
 | `gif` | GIF | Supports decode and encode, including multi-frame animation when the source is itself animated and the request is `.gif` or `.webp`. |
 | `auto` | Negotiated | Not a real format — resolved against the request's `Accept` header before any `ResizeQuery` is built. See [`.auto` content negotiation](examples.md#auto-content-negotiation) in the examples. |
 
@@ -381,7 +381,7 @@ An unrecognised or missing extension returns `400`
 (`src/modules/url/source.rs:84-97`).
 
 **AVIF now supports both directions.** This service can both *produce*
-AVIF output and *decode* an AVIF source. As of the C-dependency removal both directions are
+AVIF output and *decode* an AVIF source. As of #134 both directions are
 pure Rust: `ravif` (wrapping `rav1e`) as the encode backend, `avif-decode`
 (wrapping `rav1d`, the Rust port of `dav1d`) as the decode backend
 (`src/services/image/avif_codec.rs`), replacing `libavif` (AOM for encode,
@@ -389,7 +389,7 @@ dav1d for decode; vendored C, built via `cmake`). On the encode side this
 is a return to `ravif`/`rav1e` after an earlier measurement
 (`adr/0004-avif-measurement.md`, `adr/0005-avif-measurement-libavif-mozjpeg.md`)
 moved production to `libavif`/AOM — those ADRs are the historical record
-of that call and are not revised here. the C-dependency removal's swap is about removing every
+of that call and are not revised here. #134's swap is about removing every
 C/C++ dependency from the build, not a re-run of that perceptual-quality
 comparison, so whether AOM's measured edge over `rav1e` still holds
 against the `rav1e` release in use today is unmeasured:

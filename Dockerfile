@@ -6,7 +6,7 @@
 #   version 'GLIBC_2.38' not found
 # CI never caught it: the pipeline builds images and never runs one.
 #
-# The C-dependency removal took out aws-lc-sys along with every other C dependency, so that
+# #134 took out aws-lc-sys along with every other C dependency, so that
 # specific trigger is gone - no dependency in the graph compiles C any more,
 # and nothing reaches for a glibc symbol the way aws-lc-sys did. The rule
 # itself still stands, because it was never really about aws-lc-sys: the Rust
@@ -20,7 +20,7 @@
 # `docker pull rust:1 && docker inspect rust:1 --format='{{index .RepoDigests 0}}'`.
 FROM rust@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 as builder
 
-# No apt layer (C-dependency removal). This image used to install nasm, cmake, meson and
+# No apt layer (#134). This image used to install nasm, cmake, meson and
 # ninja-build to compile the vendored C sources of mozjpeg-sys (libjpeg-turbo),
 # libavif-sys (libavif + AOM) and libdav1d-sys (dav1d). Every one of those
 # dependencies has been replaced by a pure-Rust crate, so the build needs no

@@ -15,7 +15,7 @@ rustflags = ["-C", "target-cpu=x86-64-v3", "--cfg", "aws_sdk_unstable"]
 # That is expected and correct — the section genuinely does not apply to this
 # host's target. It takes effect when building for x86_64.
 
-# `--cfg aws_sdk_unstable` (C-dependency removal): opts into the aws-sdk-rust/smithy-rs
+# `--cfg aws_sdk_unstable` (#134): opts into the aws-sdk-rust/smithy-rs
 # ecosystem's documented "unstable API" gate - unrelated to the target-cpu
 # tuning above, but forced to live in two places because Cargo's rustflags
 # sources do not merge. Cargo picks exactly ONE of: `RUSTFLAGS` env var, then

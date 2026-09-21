@@ -30,7 +30,7 @@ SOFTWARE.
 
 ## Third-party notices
 
-`emgr` has no C or C++ dependencies (C-dependency removal) — every image codec it uses is
+`emgr` has no C or C++ dependencies (#134) — every image codec it uses is
 implemented in Rust and statically linked into the binary. That did not
 clear every third-party attribution obligation, though: one licence
 survived the rewrite. Reproduced from the repository's

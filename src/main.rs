@@ -14,7 +14,7 @@ mod models;
 mod modules;
 mod services;
 
-// mimalloc/libmimalloc-sys (C) is gone (C-dependency removal); this now runs on Rust's
+// mimalloc/libmimalloc-sys (C) is gone (#134); this now runs on Rust's
 // default `System` allocator by simple absence of a `#[global_allocator]`
 // override. Deliberately not claiming a throughput result here, in either
 // direction - nobody has measured System vs mimalloc on this workload since
@@ -33,7 +33,7 @@ const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 20;
 /// accept literals, so making this runtime-configurable means building the
 /// runtime by hand instead of via `#[tokio::main]`.
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Load-bearing, and must run first (C-dependency removal): see `install_crypto_provider`'s
+    // Load-bearing, and must run first (#134): see `install_crypto_provider`'s
     // own doc comment for why. Ahead of even building the Tokio runtime, so
     // there is no path - not a background task, not a request handler spun up
     // before this line - that could reach a reqwest `Client` before rustls
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// Installs Graviola as the process-wide default rustls crypto provider.
 ///
-/// LOAD-BEARING (C-dependency removal): `reqwest` (Cargo.toml) is built with
+/// LOAD-BEARING (#134): `reqwest` (Cargo.toml) is built with
 /// `default-features = false` plus rustls's `rustls-no-provider` feature -
 /// deliberately, to keep `aws-lc-rs`/`aws-lc-sys` (a large C and assembly
 /// codebase, previously pulled in as rustls's default crypto backend) out of
@@ -277,7 +277,7 @@ mod tests {
     use std::time::Instant;
 
     /// `cargo test` never runs `main()`, so `install_crypto_provider()`'s
-    /// call site never executes for these tests (C-dependency removal) - but two of them
+    /// call site never executes for these tests (#134) - but two of them
     /// build a real `reqwest::Client`, which panics at construction if no
     /// rustls crypto provider is installed process-wide (see that
     /// function's doc comment for why). `Once` rather than a bare call:

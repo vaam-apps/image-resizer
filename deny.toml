@@ -20,7 +20,7 @@ ignore = [
     # RUSTSEC-2024-0436 (`paste` unmaintained). This entry has now been added,
     # removed and added again, so the history is worth keeping straight:
     # it was originally ignored for rav1e; #67/#68 deleted it when libavif-sys
-    # replaced ravif/rav1e and `paste` left the graph; the C-dependency removal took out the C
+    # replaced ravif/rav1e and `paste` left the graph; #134 took out the C
     # codecs and brought ravif/rav1e back, and `avif-decode` -> `rav1d` reaches
     # it too, so it is in the graph twice over:
     #   cargo tree --all-features -i paste
@@ -70,7 +70,7 @@ allow = [
     # new one.
     "CDLA-Permissive-2.0",
 
-    # NOTE: "IJG" is deliberately NOT a blanket allow any more (C-dependency removal). It used
+    # NOTE: "IJG" is deliberately NOT a blanket allow any more (#134). It used
     # to be, for mozjpeg-sys. Removing mozjpeg did NOT remove the licence:
     # `jpeg-encoder`, the pure-Rust replacement, is ALSO "(MIT OR Apache-2.0)
     # AND IJG" - its default quantisation and Huffman tables come from the IJG
@@ -110,7 +110,7 @@ exceptions = [
     { name = "libfuzzer-sys", allow = ["NCSA"] },
 ]
 
-# NOTE: the `[[licenses.clarify]]` entry for `ring` was removed with the C dependencies.
+# NOTE: the `[[licenses.clarify]]` entry for `ring` was removed with the C dependencies (#134).
 # `ring` left the graph with aws-lc-rs/rustls's default provider, replaced by
 # the pure-Rust `rustls-graviola`; `cargo tree -i ring` finds nothing under any
 # feature set. Deleted rather than left as dead config, matching how the
@@ -135,7 +135,7 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 # `unknown-git = "deny"` above means any git dependency must be named here.
-# vaam-image-webp (C-dependency removal) is this org's fork of image-rs/image-webp, carried
+# vaam-image-webp (#134) is this org's fork of image-rs/image-webp, carried
 # only because no *published* crate encodes lossy WebP in pure Rust - upstream
 # has the encoder on `main` but has not released it. Cargo.toml pins it by
 # `rev`, so this allowance does not let arbitrary upstream commits in.

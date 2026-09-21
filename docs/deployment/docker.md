@@ -50,7 +50,7 @@ without ever running one - see the "run every built image before pushing
 it" fix (`.github/workflows/build.yml`) that closed that gap. `local_fs`
 survived only by luck (it happens not to touch the symbols in question).
 
-`aws-lc-sys` is gone (the C-dependency removal replaced it with the pure-Rust `rustls-graviola`
+`aws-lc-sys` is gone (#134 replaced it with the pure-Rust `rustls-graviola`
 crypto provider), so that specific trigger no longer exists - nothing left
 in the dependency graph compiles C, and nothing reaches for a glibc symbol
 the way `aws-lc-sys` did. The rule itself still stands regardless: it was
@@ -70,7 +70,7 @@ libwebp), and `libavif-sys` (AVIF, vendoring libavif + AOM + dav1d) each
 built vendored C source through their own `*-sys` crates' `build.rs`,
 needing `nasm` (libjpeg-turbo's x86_64 SIMD path), `cmake`
 (`libavif-sys`/`libaom-sys`), and `meson`+`ninja-build` (`libdav1d-sys`)
-installed in the builder stage. the C-dependency removal removed the apt layer that installed
+installed in the builder stage. #134 removed the apt layer that installed
 those tools entirely - there's nothing to install any more, on any
 platform this Dockerfile targets.
 
@@ -81,7 +81,7 @@ as a missing build tool in this Dockerfile. The runtime image's own shape
 (base, size, contents) was already unaffected by which codec libraries the
 builder linked - none of the four `deploy` stages, the `base_deploy` they
 build on, or the runtime `HEALTHCHECK`/`ENTRYPOINT` setup needed any
-change for #63/#66/#67/#68 (when the codecs were still native) or for the C-dependency removal
+change for #63/#66/#67/#68 (when the codecs were still native) or for #134
 (now that they aren't) - only the builder stage's `apt-get install` line
 (now removed entirely) and the Rust dependency graph did.
 

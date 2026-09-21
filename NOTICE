@@ -23,7 +23,7 @@ in Rust and statically linked into the binary:
 The Independent JPEG Group notice above is REQUIRED and must not be removed
 while jpeg-encoder is a dependency. It is easy to assume otherwise: the
 notice was originally here for mozjpeg/mozjpeg-sys, which vendored IJG C
-code, and the C-dependency removal replaced mozjpeg with pure Rust. But `jpeg-encoder` is itself
+code, and #134 replaced mozjpeg with pure Rust. But `jpeg-encoder` is itself
 licensed "(MIT OR Apache-2.0) AND IJG" - its default quantisation and Huffman
 tables derive from the IJG reference implementation, so reimplementing the
 codec in Rust did not shed the licence. See the IJG entry in deny.toml.

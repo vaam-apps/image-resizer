@@ -13,7 +13,7 @@ number at all in a project whose pitch is speed. What's below is limited to
 mechanisms you can read in the source and numbers you can reproduce with the
 commands given.
 
-The same discipline applies to the C-dependency removal, which replaced every C/C++ image codec
+The same discipline applies to #134, which replaced every C/C++ image codec
 (`mozjpeg`, the `webp` crate/libwebp, `libavif`/AOM/dav1d) and the global
 allocator (`mimalloc`) with pure-Rust equivalents. Every number in this
 document that was measured against one of the old C implementations is
@@ -172,7 +172,7 @@ bounds *queued*, not in-flight, waste.
   quality difference (DSSIM 0.0000047-0.0000093 against the old kernel's
   output, same source).
 - **JPEG decode** goes through [`jpeg-decoder`](https://docs.rs/jpeg-decoder)
-  instead of `mozjpeg`/libjpeg-turbo (the C-dependency removal; #63 stage 2/#67 had put mozjpeg
+  instead of `mozjpeg`/libjpeg-turbo (#134; #63 stage 2/#67 had put mozjpeg
   there in the first place, replacing the `image` crate's `zune-jpeg`).
   `jpeg-decoder` was picked over `image`'s own `zune-jpeg` for one specific
   reason: `Decoder::scale()`. `zune-jpeg` is faster but exposes no
@@ -206,7 +206,7 @@ bounds *queued*, not in-flight, waste.
     the request.
 - **JPEG encode** goes through [`jpeg-encoder`](https://docs.rs/jpeg-encoder),
   a pure-Rust encoder with its own AVX2 path, instead of `mozjpeg::Compress`
-  (the C-dependency removal; #76 had put mozjpeg there in the first place, replacing
+  (#134; #76 had put mozjpeg there in the first place, replacing
   `image::codecs::jpeg::JpegEncoder`, whose encoder has no progressive-mode
   switch and hardcodes 4:2:2 chroma subsampling). `jpeg-encoder` carries the
   APIs the mozjpeg path relied on - `set_progressive`,
@@ -250,7 +250,7 @@ bounds *queued*, not in-flight, waste.
   encoder's *actual* default construction path, not just its name) still
   applies to any future encoder swap.
 - **WebP** static-image encode and decode go through
-  [`vaam-image-webp`](https://github.com/vaam-apps/vaam-image-webp) (C-dependency removal)
+  [`vaam-image-webp`](https://github.com/vaam-apps/vaam-image-webp) (#134)
   instead of the [`webp`](https://docs.rs/webp) crate (real libwebp via
   FFI), which itself had replaced the `image` crate's lossless-only WebP
   encoder (#32, #60) and the `image-webp` decoder (#66). `vaam-image-webp`
@@ -275,7 +275,7 @@ bounds *queued*, not in-flight, waste.
   re-measurement should reuse.
 - **AVIF** encode and decode (#67/#68 first added the pair) go through
   pure-Rust crates instead of `libavif` (AOM + dav1d, vendored C, built via
-  `cmake`) (C-dependency removal): [`ravif`](https://docs.rs/ravif) (wrapping `rav1e`) for
+  `cmake`) (#134): [`ravif`](https://docs.rs/ravif) (wrapping `rav1e`) for
   encode, [`avif-decode`](https://docs.rs/avif-decode) (wrapping `rav1d`,
   the Rust port of `dav1d`) for decode. `avif-decode` was preferred over
   depending on `rav1d` directly because `rav1d`'s public surface is still
@@ -285,7 +285,7 @@ bounds *queued*, not in-flight, waste.
   `adr/0005-avif-measurement-libavif-mozjpeg.md` record the earlier
   evaluation that moved encode *from* `ravif`/`rav1e` *to* `libavif`/AOM -
   those ADRs are the historical record of that call and are not revised
-  here. the C-dependency removal's motivation is dependency composition (removing every C/C++
+  here. #134's motivation is dependency composition (removing every C/C++
   dependency from the build), not a re-run of the perceptual-quality
   comparison those ADRs made, so whether the AOM-vs-`rav1e`
   quality/speed tradeoff they measured still holds against the `rav1e`
@@ -357,7 +357,7 @@ explicitly (as the Dockerfile does for the shipped binaries).
   CPU-quota-limited container sizes the runtime for its actual quota rather
   than the host's full core count.
 - **Allocator**: the platform `System` allocator (`src/main.rs`), replacing
-  `mimalloc`/`libmimalloc-sys` (the C-dependency removal, dropped along with every other C/C++
+  `mimalloc`/`libmimalloc-sys` (#134, dropped along with every other C/C++
   dependency). No throughput/latency comparison between the two has been
   run for this workload: **TODO(re-measure)**.
 
@@ -377,7 +377,7 @@ Other benches cover the pipeline stages and cache-key hashing in isolation:
 This document does not embed a snapshot of those numbers - they move too
 often (six documented, code-verified changes since this document was first
 written: the `fast_image_resize` kernel swap, DCT-scaled JPEG decode, wave-2
-features, the JPEG encoder cutover, full-size mozjpeg decode, and the C-dependency removal's
+features, the JPEG encoder cutover, full-size mozjpeg decode, and #134's
 swap of every codec - JPEG, WebP, AVIF - plus the allocator to pure-Rust
 implementations) for a copy pasted here to stay honest for long.
 **`.bench-baseline/BASELINE.md`
@@ -396,13 +396,13 @@ three-way comparison against imgproxy (`bench-imgproxy/`, a k6 harness) is
 also tracked in `.bench-baseline/BASELINE.md`, and is summarized honestly in
 the [README's Performance section](README.md#performance). That cold-cache
 comparison ran the full processing pipeline through the old C codecs, so the
-ratio it reported is void after the C-dependency removal: **TODO(re-measure)** (was:
+ratio it reported is void after #134: **TODO(re-measure)** (was:
 ~3.48x slower on p50, ~2.86x less throughput than imgproxy on a cold cache).
 emgr is still expected to be measurably faster than imgproxy on a warm
 cache regardless of that re-measurement - imgproxy has no result cache of
 its own, so that comparison is architectural (cache hit vs. full
 reprocessing), not a processing-speed win, and doesn't run through any of
-the codecs the C-dependency removal touched. The cold and warm numbers are the same
+the codecs #134 touched. The cold and warm numbers are the same
 architectural trade-off seen from two sides, not two independent facts.
 
 No throughput/memory/CPU-utilization multiplier is claimed anywhere in this
