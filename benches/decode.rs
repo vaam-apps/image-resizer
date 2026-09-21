@@ -8,21 +8,24 @@
 //! makes for that format - i.e. this measures the real decode cost the
 //! service pays, not a synthetic stand-in.
 //!
-//! JPEG instead calls `ImageService::jpeg_scaled_decode(&bytes, 8)`:
-//! every JPEG decode, DCT-scaled or not, now goes through mozjpeg rather
-//! than `image`-crate/zune-jpeg - see that function's own doc comment and
-//! `decode_jpeg_scaled`'s retired-rationale comment for why. `scale_num =
-//! 8` is "no DCT reduction," matching this bench's full-size decode (no
-//! resize is requested here), the same call `decode_jpeg_scaled` makes when
-//! `select_jpeg_dct_scale` picks no scaling.
+//! JPEG calls `ImageService::decode_with_image_crate`, NOT
+//! `jpeg_scaled_decode`. This bench requests no resize, so
+//! `select_jpeg_dct_scale` returns `scale_num == 8` ("no DCT reduction"), and
+//! `decode_jpeg_scaled` routes that case to the `image`-crate/zune-jpeg
+//! decoder rather than `jpeg-decoder` - zune is ~1.9x faster when there is no
+//! reduction to exploit, which is worth 15% of a whole no-resize request.
 //!
-//! WebP calls `ImageService::decode_webp_pixels` - pure-Rust WebP via the
-//! `webp` crate, not `image-webp`'s pure-Rust decoder `write_to`/
-//! `load_from_memory_with_format` would reach; see that function's own doc
-//! comment and `decode_webp_pixels`'s for why production no longer uses
-//! the pure-Rust path.
+//! Calling `jpeg_scaled_decode(&bytes, 8)` here, as this bench used to, sits
+//! *below* that branch and therefore measures a decoder production does not
+//! use for this shape of request. `jpeg_scaled_decode` is still the right
+//! call for a bench that exercises a real DCT reduction (scale_num < 8);
+//! there is not one here yet.
 //!
-//! AVIF (#67) calls `avif_codec::decode` - `libavif`+dav1d, this crate's
+//! WebP calls `ImageService::decode_webp_pixels`, the pure-Rust decoder in
+//! `vaam-image-webp`. `image`'s own WebP feature is not enabled, so
+//! `load_from_memory_with_format` cannot reach a WebP decoder at all.
+//!
+//! AVIF calls `avif_codec::decode` - `rav1d` via `avif-decode`, this crate's
 //! only AVIF decode path (`image`'s own decoder needs the separate
 //! `avif-native` feature, not enabled - see `avif_codec`'s own module doc
 //! comment). Fixtures come from `fixtures::photo_like_sized_avif`/
@@ -82,7 +85,12 @@ fn bench_decode(c: &mut Criterion) {
                 BenchmarkId::new("jpeg", format!("{kind}/{w}x{h}")),
                 bytes,
                 |b, bytes| {
-                    b.iter(|| ImageService::jpeg_scaled_decode(bytes, 8).expect("decode fixture"));
+                    // Matches production for a no-resize request - see this
+                    // module's doc comment.
+                    b.iter(|| {
+                        ImageService::decode_with_image_crate(bytes, None, u64::MAX, false)
+                            .expect("decode fixture")
+                    });
                 },
             );
         }

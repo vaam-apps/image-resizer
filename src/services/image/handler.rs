@@ -2414,6 +2414,67 @@ impl ImageService {
     /// `pub` (like `encode_webp` above) so `benches/encode.rs` can
     /// benchmark the exact path production uses.
     ///
+    /// # Entropy coding: optimized Huffman tables, and 2 progressive scans
+    ///
+    /// Both settings below are *entropy-coding only*. Quantisation, the DCT
+    /// and the chroma path are untouched, so the decoded pixels are
+    /// unchanged and so is DSSIM - which the measurement confirms rather
+    /// than assumes: across 24 Kodak photographs x 3 DSSIM targets, the
+    /// matched-DSSIM bisection landed on the **same nominal quality in
+    /// 72/72 cases** before and after. This is a pure size/time trade, not
+    /// a quality trade.
+    ///
+    /// `set_optimized_huffman_tables(true)` makes the crate derive Huffman
+    /// tables from this image's own coefficient histogram
+    /// (`HuffmanTable::new_optimized`, Annex K.1) instead of emitting the
+    /// spec's example tables. `jpeg-encoder` defaults it *off*.
+    ///
+    /// `set_progressive_scans(PROGRESSIVE_SCANS)` overrides the `4` that
+    /// the crate's own `set_progressive(true)` installs. This crate's
+    /// progressive mode is spectral selection only - `encode_image_
+    /// progressive`'s own doc comment says so, and its `write_scan_header`
+    /// calls pass only a spectral band, never a successive-approximation
+    /// `(Ah, Al)` pair. Without successive approximation, **every extra
+    /// scan is pure overhead**: each band restarts the bit buffer, writes
+    /// its own scan header and codes its own EOB runs, with no
+    /// bit-plane refinement to pay for it. Measured over the same corpus,
+    /// size relative to the crate's 4-scan default: `2` scans **0.608x /
+    /// 0.700x / 0.808x**, `3` 0.673x/0.760x/0.853x, `5`
+    /// 0.769x/0.843x/0.922x, `8` 0.889x/0.941x/1.002x, at the 0.0150 /
+    /// 0.0080 / 0.0035 DSSIM targets. It is monotonic: fewer scans is
+    /// always smaller, and `2` is the floor the format allows (one DC scan,
+    /// one AC scan, per component). The cost is coarser progressive
+    /// rendering - a DC-only pass then the full refinement, rather than the
+    /// several intermediate passes a successive-approximation script (like
+    /// mozjpeg's) would give. That is the honest trade this encoder offers;
+    /// buying back the intermediate passes would mean implementing
+    /// successive approximation upstream, not a flag here.
+    ///
+    /// Combined effect through this function, measured on
+    /// `examples/codec_report`'s matched-DSSIM bisection (geometric mean
+    /// over the 24-image corpus, at the 0.0150 / 0.0080 / 0.0035 targets):
+    ///
+    /// | path | size vs. before | encode time |
+    /// |---|---|---|
+    /// | `progressive: false` | 0.841x / 0.898x / 0.953x | +20-30% |
+    /// | `progressive: true` | 0.608x / 0.700x / 0.808x | +20-30% |
+    ///
+    /// Decode time did not regress (progressive decode measured slightly
+    /// *faster*, consistent with there being fewer scans to walk), though
+    /// the machine those runs shared was busy enough that the unchanged
+    /// WebP/AVIF control formats moved +-15% between paired runs, so treat
+    /// every timing figure here as +-15% and the size figures - which are
+    /// deterministic and reproduced exactly across runs - as exact.
+    ///
+    /// One behavioural consequence worth stating: in this crate
+    /// `optimize_huffman_table` also selects `encode_image_sequential` over
+    /// `encode_image_interleaved` (see its `encode_image_internal`), so a
+    /// non-progressive JPEG from this function is now **non-interleaved** -
+    /// still SOF0 baseline, but one scan per component rather than one
+    /// interleaved scan. That is ordinary ITU T.81 baseline, and the
+    /// round-trip is pinned by `encode_jpeg_non_interleaved_round_trips`
+    /// below.
+    ///
     /// TODO(re-measure): `Cargo.toml`'s own comment on the `jpeg-encoder`
     /// dependency states the expected cost of this swap - "it does not
     /// implement trellis quantisation, so JPEGs get measurably larger at
@@ -2423,7 +2484,12 @@ impl ImageService {
     /// doc comment below this one used to compare against) needs the same
     /// matched-DSSIM corpus method `adr/0003`/`adr/0005` used, which wasn't
     /// run as part of this port. Do not invent a number here - leave this
-    /// TODO until it's actually measured.
+    /// TODO until it's actually measured. Still open: the "Entropy coding"
+    /// section above measures this encoder against *itself*, before and
+    /// after, on a machine with no mozjpeg build available. Composing those
+    /// ratios with a previously published mozjpeg comparison would be
+    /// arithmetic on someone else's corpus run, not a measurement, so it is
+    /// deliberately not written here.
     ///
     /// No `catch_unwind` wrapper (unlike the mozjpeg version this
     /// replaces, and unlike every *decode*-direction function in this
@@ -2451,6 +2517,15 @@ impl ImageService {
     ///   else in this workspace's dependency graph requests it - confirmed
     ///   via `Cargo.lock`, whose `jpeg-encoder` entry lists no additional
     ///   dependencies the `simd` feature would pull in).
+    /// - `set_progressive_scans`' own `assert!((2..=64).contains(&scans))`
+    ///   is fed `PROGRESSIVE_SCANS`, a `const` `2` - in range by
+    ///   construction, and not reachable from any caller-supplied value.
+    /// - `optimize_huffman_table`'s two release-mode
+    ///   `assert!(had_dc)`/`assert!(had_ac)` fire only if some Huffman
+    ///   table slot in `0..components.len().min(2)` is claimed by no
+    ///   component. `ColorType::Rgb` always yields the crate's three-
+    ///   component YCbCr layout (luma on table 0, both chroma on table 1),
+    ///   so both slots are always claimed.
     ///
     /// `exif_metadata` (#5) and `icc_profile` are both wired through the
     /// crate's own `add_exif_metadata`/`add_icc_profile` - unlike mozjpeg,
@@ -2471,6 +2546,12 @@ impl ImageService {
         icc_profile: Option<&[u8]>,
         exif_metadata: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
+        /// Number of progressive scans per component, handed to
+        /// `jpeg_encoder::Encoder::set_progressive_scans`. See this
+        /// function's "Entropy coding" doc section for the measurement that
+        /// picked `2` over the crate's own default of `4`.
+        const PROGRESSIVE_SCANS: u8 = 2;
+
         let rgb = img.to_rgb8();
         let (width, height) = rgb.dimensions();
         let width = u16::try_from(width)
@@ -2490,7 +2571,12 @@ impl ImageService {
         };
         encoder.set_sampling_factor(sampling_factor);
         encoder.set_chroma_subsampling_method(jpeg_encoder::ChromaSubsamplingMethod::Average);
-        encoder.set_progressive(progressive);
+        encoder.set_optimized_huffman_tables(true);
+        if progressive {
+            encoder.set_progressive_scans(PROGRESSIVE_SCANS);
+        } else {
+            encoder.set_progressive(false);
+        }
 
         if let Some(icc) = icc_profile.filter(|icc| !icc.is_empty()) {
             let _ = encoder.add_icc_profile(icc);
@@ -3309,7 +3395,13 @@ impl ImageService {
     /// `decode_jpeg_scaled` (which does need more of `params`, for
     /// `autorotate`/`effective_resize_target`) already takes it directly -
     /// no need to widen this one's dependency surface to match.
-    fn decode_with_image_crate(
+    /// `pub` (like `encode_png`/`encode_webp` above) so `benches/decode.rs` can
+    /// measure the exact path production takes, rather than a near-miss. That
+    /// distinction is load-bearing here: a no-resize request routes JPEG
+    /// through this function, not `jpeg_scaled_decode`, and the two decoders
+    /// differ by ~1.9x - so a bench calling the other one reports a number the
+    /// service never pays. The bench used to do exactly that.
+    pub fn decode_with_image_crate(
         image_bytes: &[u8],
         format: Option<ImageFormat>,
         max_src_resolution_mp: u64,
@@ -3532,16 +3624,22 @@ impl ImageService {
     /// - #33's EXIF orientation and ICC profile are read off it too, and so
     ///   (#5) is the raw EXIF metadata blob.
     ///
-    /// Every JPEG decode - DCT-scaled or not - hands off to
-    /// `jpeg_scaled_decode` for the actual pixel decode: `scale_num == 8`
-    /// just means it's called with no DCT reduction, rather than the
-    /// `image`-crate/zune-jpeg decoder being reused for that case. See the
-    /// retired-rationale comment at the `drop(decoder)` call site below for
-    /// why (that history is about mozjpeg specifically but the "one decoder
-    /// regardless of scale" conclusion still holds under `jpeg_decoder`),
-    /// and `select_jpeg_dct_scale` for how the scale factor itself is
-    /// chosen - the "never decode smaller than the target" requirement
-    /// lives there.
+    /// Which decoder runs depends on the scale factor, and that split is
+    /// measured rather than assumed:
+    /// - `scale_num < 8` (a real DCT reduction is useful) hands off to
+    ///   `jpeg_scaled_decode`, i.e. `jpeg_decoder::Decoder::scale` - the
+    ///   only scaled-decode API available here at all, and the entire
+    ///   reason this crate depends on `jpeg-decoder`.
+    /// - `scale_num == 8` (no reduction: either no resize was asked for, or
+    ///   even a 1/2 scale would land below the target) reuses the
+    ///   already-open `image`/zune-jpeg decoder above, which is ~1.9x
+    ///   faster at full size.
+    ///
+    /// See the comment at that branch for the measurement, including the
+    /// history of this split being introduced, retired against mozjpeg, and
+    /// reinstated once mozjpeg was gone. `select_jpeg_dct_scale` is where
+    /// the scale factor itself is chosen - the "never decode smaller than
+    /// the target" requirement lives there.
     fn decode_jpeg_scaled(
         image_bytes: &[u8],
         max_src_resolution_mp: u64,
@@ -3698,10 +3796,42 @@ impl ImageService {
         // decoder instead of two decoders whose selection depended on
         // whether the request happened to downscale.
         //
-        // TODO(re-measure): re-measure `jpeg_decoder`'s full-size decode against
-        // `image`/zune-jpeg now that mozjpeg is gone - the numbers above
-        // are mozjpeg's, not `jpeg_decoder`'s, and a pure-Rust decoder is
-        // not guaranteed to keep the same win.
+        // UN-RETIRED, because that TODO has now been run. Measured on the
+        // 288 JPEGs `examples/codec_report` writes for the 24-image Kodak
+        // corpus (both scan layouts, all three DSSIM targets), decoding
+        // each file full-size with each decoder in the same process,
+        // best-of-7:
+        //
+        // | scan layout | `jpeg_decoder` | `image`/zune-jpeg | ratio |
+        // |---|---|---|---|
+        // | sequential  | 1.82 ms | 0.94 ms | 1.89x |
+        // | progressive | 1.89 ms | 1.04 ms | 1.79x |
+        //
+        // The win reversed: it was mozjpeg that beat zune-jpeg by ~1.5x,
+        // and `jpeg_decoder` - which replaced mozjpeg in the C-dependency
+        // removal without this comparison being re-run - *loses* to it by
+        // nearly 2x instead. So `scale_num == 8` goes back to the
+        // already-open `image`-crate decoder above.
+        //
+        // The two premises the retirement rested on are re-checked, not
+        // assumed: the second decoder does buy something after all (it is
+        // the slower one, so not opening it is the win), and the
+        // "byte-for-byte identical output" property is still not required -
+        // measured across those same 288 files, the two decoders' rasters
+        // differ by at most **3/255** on any channel, the identical
+        // tolerance the mozjpeg-vs-zune-jpeg comparison above already
+        // accepted.
+        //
+        // Reusing `decoder` rather than opening a third one also drops a
+        // redundant header parse: it is already constructed and
+        // limit-configured above, and `orientation`/`icc_profile`/
+        // `exif_metadata` have all been read off it.
+        if scale_num == 8 {
+            let img =
+                image::DynamicImage::from_decoder(decoder).context("Failed to decode image")?;
+            return Ok((img, orientation, icc_profile, exif_metadata));
+        }
+
         drop(decoder);
 
         let img = Self::jpeg_scaled_decode(image_bytes, scale_num)?;
@@ -5624,6 +5754,113 @@ mod tests {
         assert_eq!(dims_baseline, dims_progressive);
     }
 
+    /// Walks a JPEG's marker segments, returning every marker byte in
+    /// order. Entropy-coded data after an `SOS` is skipped by scanning for
+    /// the next `0xFF xx` that is neither a stuffed `0xFF00` nor an `RST`.
+    fn jpeg_markers(bytes: &[u8]) -> Vec<u8> {
+        let mut markers = Vec::new();
+        let mut i = 2; // past SOI
+        while i + 3 < bytes.len() {
+            if bytes[i] != 0xFF {
+                i += 1;
+                continue;
+            }
+            let marker = bytes[i + 1];
+            if marker == 0xD9 {
+                markers.push(marker);
+                break;
+            }
+            markers.push(marker);
+            let len = usize::from(u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]));
+            i += 2 + len;
+            if marker == 0xDA {
+                // Skip the entropy-coded segment that follows.
+                while i + 1 < bytes.len()
+                    && !(bytes[i] == 0xFF
+                        && bytes[i + 1] != 0x00
+                        && !(0xD0..=0xD7).contains(&bytes[i + 1]))
+                {
+                    i += 1;
+                }
+            }
+        }
+        markers
+    }
+
+    /// `encode_jpeg` now sets `set_optimized_huffman_tables(true)` and, for
+    /// progressive, `set_progressive_scans(2)` - see that function's
+    /// "Entropy coding" doc section for the measured reason. Optimized
+    /// tables additionally switch `jpeg-encoder` from one interleaved scan
+    /// to **one scan per component**, so a default JPEG from this crate is
+    /// now a non-interleaved baseline (SOF0) file. That is ordinary ITU
+    /// T.81, but it is a different bitstream shape than this crate emitted
+    /// before, so pin both the shape and the round-trip through the
+    /// production decoder.
+    #[test]
+    fn encode_jpeg_non_interleaved_round_trips() {
+        let mut img = image::RgbImage::new(96, 64);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = image::Rgb([
+                (x * 2) as u8,
+                (y * 3) as u8,
+                ((x ^ y) * 5) as u8,
+            ]);
+        }
+        let img = DynamicImage::ImageRgb8(img);
+
+        let baseline = ImageService::encode_jpeg(&img, 80, false, false, None, None)
+            .expect("baseline encode should succeed");
+        let progressive = ImageService::encode_jpeg(&img, 80, true, false, None, None)
+            .expect("progressive encode should succeed");
+
+        let baseline_markers = jpeg_markers(&baseline);
+        let progressive_markers = jpeg_markers(&progressive);
+
+        // SOF0 (baseline sequential) vs SOF2 (progressive).
+        assert!(
+            baseline_markers.contains(&0xC0) && !baseline_markers.contains(&0xC2),
+            "non-progressive output must be SOF0, got markers {baseline_markers:02X?}"
+        );
+        assert!(
+            progressive_markers.contains(&0xC2) && !progressive_markers.contains(&0xC0),
+            "progressive output must be SOF2, got markers {progressive_markers:02X?}"
+        );
+
+        // Optimized tables => non-interleaved => one SOS per component.
+        assert_eq!(
+            baseline_markers.iter().filter(|&&m| m == 0xDA).count(),
+            3,
+            "optimized Huffman tables make the baseline path non-interleaved: \
+             expected one SOS per component, got markers {baseline_markers:02X?}"
+        );
+        // 2 progressive scans per component: one DC, one AC.
+        assert_eq!(
+            progressive_markers.iter().filter(|&&m| m == 0xDA).count(),
+            6,
+            "PROGRESSIVE_SCANS = 2 means one DC and one AC scan per component, \
+             got markers {progressive_markers:02X?}"
+        );
+
+        // Both must decode, through the production decoder and through
+        // `image`'s own (a different implementation), to the same size.
+        for (name, bytes) in [("baseline", &baseline), ("progressive", &progressive)] {
+            let decoded = ImageService::jpeg_scaled_decode(bytes, 8)
+                .unwrap_or_else(|e| panic!("{name}: production decode should succeed: {e}"));
+            assert_eq!(decoded.dimensions(), (96, 64), "{name}: production decode");
+
+            let via_image = image::load_from_memory_with_format(bytes, ImageFormat::Jpeg)
+                .unwrap_or_else(|e| panic!("{name}: `image` decode should succeed: {e}"));
+            assert_eq!(via_image.dimensions(), (96, 64), "{name}: `image` decode");
+
+            // The DCT-scaled decode is the whole reason this crate depends
+            // on `jpeg-decoder` rather than `zune-jpeg`, so it has to keep
+            // working on the new, non-interleaved scan layout too.
+            let half = ImageService::jpeg_scaled_decode(bytes, 4)
+                .unwrap_or_else(|e| panic!("{name}: scaled decode should succeed: {e}"));
+            assert_eq!(half.dimensions(), (48, 32), "{name}: scaled decode");
+        }
+    }
+
     /// An unset `jpeg_progressive` (the common case) must resolve through
     /// `PerformanceConfig::jpeg_progressive_default` and produce output
     /// byte-identical to explicitly requesting the same default - proving
@@ -5845,17 +6082,19 @@ mod tests {
     /// the encoder's own lossless-ness.
     ///
     /// The reference decode must go through the same decoder the pipeline
-    /// uses for this request (#67): `query(None, None)` requests no
-    /// resize, so `decode_jpeg_scaled` picks `scale_num == 8` and decodes
-    /// through `jpeg_scaled_decode`, not `image::load_from_memory`'s
-    /// zune-jpeg path (that stopped being true once #67 retired the old
-    /// scale_num == 8 special case - see `decode_jpeg_scaled`'s
-    /// retired-rationale comment). The two decoders differ by up to 3/255
-    /// per channel on real photographs - imperceptible, but enough to trip
-    /// a byte-identity assertion if the reference decode used the *other*
-    /// decoder than the one the pipeline actually ran. This test cares
-    /// about the WebP encoder's losslessness, not about which JPEG decoder
-    /// is faster, so `original` is decoded the same way the pipeline does.
+    /// uses for this request: `query(None, None)` requests no resize, so
+    /// `decode_jpeg_scaled` picks `scale_num == 8`, and that case now
+    /// decodes through the `image`/zune-jpeg decoder again rather than
+    /// `jpeg_scaled_decode`/`jpeg_decoder` - see `decode_jpeg_scaled`'s own
+    /// comment at that branch for the measurement that moved it back. The
+    /// two decoders differ by up to 3/255 per channel on real photographs -
+    /// imperceptible, but enough to trip a byte-identity assertion if the
+    /// reference decode used the *other* decoder than the one the pipeline
+    /// actually ran. This test cares about the WebP encoder's
+    /// losslessness, not about which JPEG decoder is faster, so `original`
+    /// is decoded the same way the pipeline does. If that branch ever moves
+    /// again, this line moves with it - the assertion itself does not
+    /// loosen.
     ///
     /// The WebP *output* is decoded via `Self::decode_webp_pixels` (C-dependency removal)
     /// rather than `image::load_from_memory`: `image`'s own "webp" feature
@@ -5876,7 +6115,7 @@ mod tests {
             ImageService::process_image_blocking_with_limits(&bytes, &params, &config)
                 .expect("processing should succeed");
 
-        let original = ImageService::jpeg_scaled_decode(&bytes, 8)
+        let original = image::load_from_memory_with_format(&bytes, ImageFormat::Jpeg)
             .expect("source should decode")
             .to_rgba8();
         let decoded = ImageService::decode_webp_pixels(&output)

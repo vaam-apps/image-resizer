@@ -190,9 +190,11 @@ DSSIM-matched quality across all 24 Kodak photographs, relative to the C codecs:
 | WebP                         | 1.208x   | 1.174x   | 1.200x   |
 | AVIF                         | 1.158x   | 1.101x   | 1.040x   |
 
-Default JPEG is at **parity** — production used mozjpeg's `JCP_FASTEST` profile, which has
-no trellis quantisation, so there was none to lose. The trellis cost lands only on the
-opt-in progressive path.
+Default JPEG is **smaller than mozjpeg's**, by 4–17%. Production used mozjpeg's
+`JCP_FASTEST` profile, which has no trellis quantisation, so there was none to lose — and
+two lines of encoder configuration (optimized Huffman tables, and 2 progressive scans
+instead of 4) took it past parity. Entropy coding only, so the decoded pixels are
+unchanged.
 
 **What to serve.** Within the pure-Rust stack, relative to JPEG at matched quality:
 

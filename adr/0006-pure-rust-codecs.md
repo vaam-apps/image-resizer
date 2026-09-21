@@ -125,16 +125,26 @@ bisections:
 
 | Format                              | <= 0.0150  | <= 0.0080  | <= 0.0035  |
 | ----------------------------------- | ---------- | ---------- | ---------- |
-| **JPEG** (default, non-progressive) | **0.995x** | **1.000x** | **1.000x** |
-| **JPEG progressive** (`jpgo:1:`)    | **2.014x** | **1.658x** | **1.317x** |
+| **JPEG** (default, non-progressive) | **0.831x** | **0.903x** | **0.956x** |
+| **JPEG progressive** (`jpgo:1:`)    | **1.187x** | **1.120x** | **1.069x** |
 | **WebP**                            | 1.208x     | 1.174x     | 1.200x     |
 | **AVIF**                            | 1.158x     | 1.101x     | 1.040x     |
 | PNG (control, lossless)             | 1.000x     | -          | -          |
 
-The trellis loss is real, but it lands **only on the opt-in progressive path**,
-where it is worse than the old figure suggested - up to 2x at low quality. The
-default path is at parity because it never had trellis to lose. PNG is
-byte-identical, as it must be: same encoder on both sides.
+**JPEG now beats mozjpeg**, by 4-17%. It reached parity first - the default path
+never had trellis to lose - and went past it on two lines of encoder
+configuration: `jpeg-encoder` ships with optimized Huffman tables *off* and, in
+progressive mode, four scans. Tables derived from the actual image beat the
+generic ones, and its progressive mode is spectral selection only (no successive
+approximation), so scans past the second are pure overhead. Entropy coding only:
+quantisation, DCT and the chroma path are untouched, so decoded pixels are
+unchanged - the bisection confirms it by landing on the identical nominal
+quality in 72 of 72 cells.
+
+That also took progressive JPEG from 2.014x to 1.187x, so most of what looked
+like a trellis deficit was a scan-count default.
+
+PNG is byte-identical, as it must be: same encoder on both sides.
 
 AVIF costs 4-16%, not the larger penalty feared from ravif encoding 4:4:4 where
 AOM used 4:2:0.
@@ -146,27 +156,26 @@ builds. This is what should drive `.auto` negotiation.
 
 | Relative to that build's JPEG    | <= 0.0150  | <= 0.0080  | <= 0.0035  |
 | -------------------------------- | ---------- | ---------- | ---------- |
-| **Pure Rust** - AVIF             | **0.567x** | **0.700x** | **0.787x** |
-| **Pure Rust** - WebP             | **0.798x** | **0.951x** | 1.072x     |
-| **Pure Rust** - JPEG progressive | 1.382x     | 1.278x     | 1.177x     |
+| **Pure Rust** - AVIF             | **0.685x** | **0.784x** | **0.828x** |
+| **Pure Rust** - WebP             | 0.964x     | 1.067x     | 1.129x     |
+| **Pure Rust** - JPEG progressive | 1.002x     | 1.001x     | 1.000x     |
 | C stack - AVIF                   | 0.496x     | 0.656x     | 0.781x     |
 | C stack - WebP                   | 0.656x     | 0.805x     | 0.884x     |
 | C stack - JPEG progressive       | 0.663x     | 0.759x     | 0.874x     |
 
 Two conclusions, both actionable:
 
-1. **AVIF still wins decisively** - 21-43% smaller than JPEG, barely changed from
-   the C stack.
-2. **WebP is worth serving again, but read the number with the caveat below.**
-   After the encoder work it is 20% smaller than JPEG at low quality, 5% smaller
-   in the middle and 7% larger at high quality. **However**, DSSIM flatters it:
-   see "DSSIM is not a neutral referee" below. Adjusting for that, the low-quality
-   advantage is nearer ~15% than 20%. Still worth serving to a client that takes
-   WebP but not AVIF, below the top quality band.
-3. **Progressive JPEG is no longer the smaller option.** It used to be 13-34%
-   smaller than baseline JPEG; it is now 18-38% larger, because mozjpeg's
-   trellis was doing that work. Its remaining argument is progressive *rendering*,
-   not size.
+1. **AVIF still wins** - 17-32% smaller than JPEG. Its *relative* lead narrowed
+   (from 21-43%) not because AVIF got worse but because JPEG got better.
+2. **WebP's edge over JPEG has essentially gone** - 3.6% smaller at low quality,
+   larger above it. Not because the WebP encoder regressed (it is unchanged, and
+   gained ~46% earlier in this work) but because JPEG improved underneath it. And
+   DSSIM flatters WebP by ~2.2 SSIMULACRA2 points (see "DSSIM is not a neutral
+   referee"), which is worth more than a 3.6% margin. Treat WebP as roughly
+   equivalent to JPEG and prefer AVIF wherever the client accepts it.
+3. **Progressive JPEG is now free** - within 0.2% of baseline at every level,
+   where it was 18-38% larger before the scan-count fix. It can be chosen on its
+   rendering behaviour alone, which is what it was always for.
 
 ### Decode, like for like (n=24 images x 3 targets, same bytes into both builds)
 
