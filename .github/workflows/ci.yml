@@ -199,6 +199,22 @@ jobs:
     name: no C/C++ build dependencies
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # One list, used by every check in this job. It used to be spelled out
+      # four separate times - two of them only `x86_64-unknown-linux-gnu` -
+      # so adding a target silently extended one check and not the others.
+      #
+      # musl is here ahead of the move to a `scratch` base image (#144), which
+      # forces a fully static binary and therefore musl: static glibc is not
+      # an option because `getaddrinfo` dlopens NSS modules that do not exist
+      # in a scratch image. Adding the targets now means the guard is already
+      # watching the graph the migration will actually build, rather than
+      # being extended after something has already regressed in it.
+      NATIVE_DEP_TARGETS: >-
+        x86_64-unknown-linux-gnu
+        aarch64-unknown-linux-gnu
+        x86_64-unknown-linux-musl
+        aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -258,17 +274,19 @@ jobs:
       # An earlier version of this job made all three mistakes at once and
       # passed while the amd64 image build was broken.
       #
-      # Both targets are checked because this is exactly where it hid: the
-      # avif-decode fork aside, upstream enables rav1d's asm on x86_64 only, so
-      # a host-only check on an arm64 runner or an Apple Silicon laptop passes
-      # while `docker build --platform linux/amd64` fails on missing nasm.
+      # Every target in NATIVE_DEP_TARGETS is checked because this is exactly
+      # where it hid: the avif-decode fork aside, upstream enables rav1d's asm
+      # on x86_64 only, so a host-only check on an arm64 runner or an Apple
+      # Silicon laptop passes while `docker build --platform linux/amd64`
+      # fails on missing nasm.
       - name: assert no assembly or native toolchain is required
         run: |
           set -euo pipefail
-          rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+          # shellcheck disable=SC2086 # deliberate word splitting: one list, many targets
+          rustup target add $NATIVE_DEP_TARGETS
 
           fail=0
-          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+          for target in $NATIVE_DEP_TARGETS; do
             echo "::group::$target"
             enabled=$(cargo tree --all-features -e features --target "$target" \
                         | grep -E 'feature "asm' | sort -u || true)
@@ -279,19 +297,22 @@ jobs:
             else
               echo "no asm features enabled"
             fi
-            echo "::endgroup::"
-          done
 
-          # cmake/meson/bindgen have no such feature subtlety: if they are in
-          # the graph at all, something is compiling native source.
-          for crate in cmake bindgen; do
-            out=$(cargo tree --all-features -e normal,build \
-                    --target x86_64-unknown-linux-gnu -i "$crate" 2>/dev/null || true)
-            if printf '%s' "$out" | grep -q "^$crate v"; then
-              echo "::error::$crate is in the dependency graph - a dependency is building native source."
-              printf '%s\n' "$out" | head -20
-              fail=1
-            fi
+            # cmake/meson/bindgen have no such feature subtlety: if they are in
+            # the graph at all, something is compiling native source. Checked
+            # per target rather than once on x86_64: a build-dependency can be
+            # declared under a `[target.'cfg(...)'.build-dependencies]` table,
+            # which is precisely how the rav1d asm miss happened one step above.
+            for crate in cmake bindgen; do
+              out=$(cargo tree --all-features -e normal,build \
+                      --target "$target" -i "$crate" 2>/dev/null || true)
+              if printf '%s' "$out" | grep -q "^$crate v"; then
+                echo "::error::$crate is in the dependency graph for $target - a dependency is building native source."
+                printf '%s\n' "$out" | head -20
+                fail=1
+              fi
+            done
+            echo "::endgroup::"
           done
 
           [ "$fail" -eq 0 ] || {
@@ -310,15 +331,22 @@ jobs:
       - name: assert no native (-sys) libraries
         run: |
           set -euo pipefail
-          cargo tree --all-features -e normal --target x86_64-unknown-linux-gnu \
-            --prefix none --format '{p}' \
-            | sed 's/ (\*)//' | sort -u > deps.txt
+          fail=0
+          for target in $NATIVE_DEP_TARGETS; do
+            echo "::group::$target"
+            cargo tree --all-features -e normal --target "$target" \
+              --prefix none --format '{p}' \
+              | sed 's/ (\*)//' | sort -u > deps.txt
 
-          if grep -iE '(-sys )|^(ring|aws-lc-rs) ' deps.txt \
-              | grep -viE '^(core-foundation-sys|security-framework-sys|windows-sys|linux-raw-sys|wasi|js-sys|web-sys|jni-sys) '; then
-            echo "::error::A dependency reintroduced a native library."
-            exit 1
-          fi
+            if grep -iE '(-sys )|^(ring|aws-lc-rs) ' deps.txt \
+                | grep -viE '^(core-foundation-sys|security-framework-sys|windows-sys|linux-raw-sys|wasi|js-sys|web-sys|jni-sys) '; then
+              echo "::error::A dependency reintroduced a native library for $target."
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+
+          [ "$fail" -eq 0 ] || exit 1
           echo "OK: no native libraries."
 
   docs-env-drift:

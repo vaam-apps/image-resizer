@@ -359,7 +359,13 @@ explicitly (as the Dockerfile does for the shipped binaries).
 - **Allocator**: the platform `System` allocator (`src/main.rs`), replacing
   `mimalloc`/`libmimalloc-sys` (#134, dropped along with every other C/C++
   dependency). No throughput/latency comparison between the two has been
-  run for this workload: **TODO(re-measure)**.
+  run for this workload - tracked in **#144**. The benchmarks below will not
+  answer it: `#[global_allocator]` was declared in the binary
+  (`src/main.rs`), and criterion benches link the library target
+  (`src/lib.rs`), which never had one - so they measured `System` before and
+  after alike. Answering it needs a load test against the real binary, and
+  the metric to watch is RSS under sustained concurrency rather than
+  throughput.
 
 ## Benchmarking
 
