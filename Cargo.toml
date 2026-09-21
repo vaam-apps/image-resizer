@@ -53,7 +53,7 @@ harness = false
 
 [dependencies]
 axum = { version = "0.8", features = ["tracing", "tokio", "macros"] }
-axum-otel-metrics = { version = "0.11" }
+axum-otel-metrics = { version = "0.14" } # opentelemetry ^0.32, see the tracing-opentelemetry comment
 axum-tracing-opentelemetry = { version = "0.39" }
 # NOT "compression-full" (C-dependency removal): that feature is gzip+brotli+deflate+zstd,
 # and the zstd arm is the only one that is not pure Rust - it resolves to
@@ -271,26 +271,25 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-opentelemetry = { version = "0.29", optional = true }
-opentelemetry-otlp = { version = "0.29", optional = true, features = ["tokio", "metrics", "trace", "grpc-tonic", "gzip-tonic"] }
-opentelemetry_sdk = { version = "0.29", optional = true, features = ["tokio", "metrics", "rt-tokio", "trace"] }
-opentelemetry-prometheus = { version = "0.29", optional = true }
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", optional = true, features = ["tokio", "metrics", "trace", "grpc-tonic", "gzip-tonic"] }
+opentelemetry_sdk = { version = "0.32", optional = true, features = ["tokio", "metrics", "rt-tokio", "trace"] }
+opentelemetry-prometheus = { version = "0.32", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
-# NOT 0.31+ (#134): the otel feature has not compiled since the bump to 0.33.
-# `tracing-opentelemetry` tracks `opentelemetry`'s breaking releases one for
-# one - 0.30 needs opentelemetry ^0.29, 0.31 needs ^0.30, 0.32 needs ^0.31,
-# 0.33 needs ^0.32 - and every other opentelemetry crate here is pinned at
-# 0.29. With 0.33 against 0.29, `tracing_opentelemetry::layer().with_tracer()`
-# fails with `SdkTracer: Tracer` unsatisfied, because the SDK type implementing
-# `Tracer` is a *different* `opentelemetry` crate's trait.
+# The whole opentelemetry stack moves together, and this is why (#134).
+# `axum-tracing-opentelemetry` 0.39 - already pinned above before this change -
+# requires opentelemetry ^0.32 and tracing-opentelemetry ^0.33, while everything
+# else here was pinned at 0.29. Cargo resolved that by putting BOTH 0.29.1 and
+# 0.32.0 in the graph, which is not merely wasteful: `opentelemetry`'s globals
+# (tracer provider, propagator) are per-crate-version statics, so the axum layer
+# and this crate's own tracer were configuring two different pipelines.
 #
-# The bump was merged without the otel feature ever building: CI's
-# `Test (local_fs,otel)` job has been red on main since. Pinned back to the
-# version matching the rest of the stack. Moving forward instead means bumping
-# opentelemetry, -otlp, _sdk and -prometheus to 0.32 together, plus
-# axum-otel-metrics and axum-tracing-opentelemetry to whatever matches - one
-# coordinated change, not a per-crate Dependabot bump.
-tracing-opentelemetry = { version = "0.30", optional = true }
+# It surfaced as `SdkTracer: Tracer` unsatisfied - the SDK type came from 0.29
+# and the trait from 0.32 - which is why pinning tracing-opentelemetry *back* to
+# 0.30 made it compile without fixing anything. These versions track each other
+# one for one (tracing-opentelemetry 0.33 <-> opentelemetry 0.32), so they can
+# only be bumped as a set; a per-crate Dependabot bump will always split them.
+tracing-opentelemetry = { version = "0.33", optional = true }
 tracing = { version = "0.1", features = ["attributes"] }
 prometheus = { version = "0.14", optional = true }
 dashmap = "6"
