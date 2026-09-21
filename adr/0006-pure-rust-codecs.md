@@ -234,11 +234,25 @@ a line-by-line port of dav1d, and the residual would not be uniform if the
 coefficient path differed. Against the original images libavif is closer in
 **72 of 72** cases (median MSE 35.47 vs 37.22, ~5% worse).
 
-The practical effect is about 0.2% brightness, which is imperceptible. It is
-recorded because it is a real, consistent fidelity loss that nothing in the test
-suite was checking, and because "the decoder is a faithful port" was being taken
-on trust. Worth tracing to `avif-decode`'s use of the `yuv` crate versus
-libavif's own conversion before assuming it is harmless.
+**Investigated, and the obvious explanation is wrong.** The difference histogram
+looked decisive: ~80% of bytes differ by 0 or +1 (the rounding bias), but 6.75%
+differ by more than 2 and by as much as 64, concentrated on *alternating pixels*
+with the sign flipping between rows - the classic signature of chroma upsampling,
+since 4:2:0 chroma is half resolution. `avif-decode` calls `yuv`'s
+`yuv420_to_rgb`, which replicates each chroma sample, while libavif interpolates
+by default; and `yuv` ships `yuv420_to_rgb_bilinear`.
+
+Switching to the bilinear variants made it **worse** on both metrics - median
+MSE 37.22 -> 38.59, median DSSIM 0.007646 -> 0.007826 (+1.18%) - so whatever
+libavif does, it is not plain bilinear, and the hypothesis is retired rather than
+shipped. The change was reverted.
+
+The useful result is the scale. On MSE the gap looks like 4.4%; **perceptually it
+is about 1%** (DSSIM 0.007567 for libavif against 0.007646 for rav1d), and the
+brightness bias is ~0.2%. MSE substantially oversells this. It is recorded
+because nothing in the test suite was checking decoder fidelity at all and
+"faithful port" was being taken on trust - but it does not justify further work,
+and certainly not a hand-written upsampler.
 
 ## What the WebP encoder is still missing
 

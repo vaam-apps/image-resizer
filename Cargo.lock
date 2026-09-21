@@ -4302,7 +4302,6 @@ dependencies = [
 [[package]]
 name = "vaam-avif-decode"
 version = "3.0.1-vaam.1"
-source = "git+https://github.com/vaam-apps/vaam-avif-decode?rev=b938566#b938566179d53f46c29ec800ec7298ed45d040fe"
 dependencies = [
  "avif-parse",
  "bytemuck",
