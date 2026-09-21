@@ -178,10 +178,28 @@ Micro-benchmarks (single-operation, criterion, darwin/arm64, synthetic fixture �
 | Full pipeline, photo → thumbnail JPEG | 9.65 ms (was 6.04 ms — **1.60x slower**) |
 | Full pipeline, 4K photo → large downscale | 33.87 ms (was 19.19 ms — **1.76x slower**) |
 
-**Speed is only half of it.** At DSSIM-matched quality on the Kodak corpus, the pure-Rust
-encoders also produce **larger files**: JPEG is 1.16x–1.41x bigger than mozjpeg (no trellis
-quantisation), and WebP is 1.89x–2.19x bigger than libwebp. Full method, per-image numbers
-and the accepted regressions are in [ADR 0006](adr/0006-pure-rust-codecs.md).
+**Speed is only half of it — and output size is the half that matters more**, because a
+cached service pays encode time once per image but ships the bytes on every delivery. At
+DSSIM-matched quality across all 24 Kodak photographs, relative to the C codecs:
+
+| Format | ≤ 0.0150 | ≤ 0.0080 | ≤ 0.0035 |
+|---|---|---|---|
+| JPEG (default) | 0.995x | 1.000x | 1.000x |
+| JPEG progressive (`jpgo:1:`) | 2.014x | 1.658x | 1.317x |
+| WebP | 1.878x | 1.970x | 2.247x |
+| AVIF | 1.158x | 1.101x | 1.040x |
+
+Default JPEG is at **parity** — production used mozjpeg's `JCP_FASTEST` profile, which has
+no trellis quantisation, so there was none to lose. The trellis cost lands only on the
+opt-in progressive path.
+
+**What to serve has changed.** Within the pure-Rust stack, AVIF is **0.567x–0.787x** the
+size of JPEG, while WebP is now **1.145x–1.978x** — i.e. *larger* than JPEG, where under
+libwebp it was smaller. Preferring WebP over JPEG now costs bytes on every request.
+
+Full method, the like-for-like decode comparison, and the accepted regressions are in
+[ADR 0006](adr/0006-pure-rust-codecs.md). Reproduce with
+`cargo run --release --example codec_report -- encode <corpus-dir> <out-dir>`.
 
 PNG's number above is the one that used to read as 1.71 ms in this table — that measured the `image` crate's default `CompressionType::Fast`, which production never uses; `encode_single_image` builds an explicit `CompressionType::Best` encoder, ~56x more expensive on this fixture. See `.bench-baseline/BASELINE.md`'s "PNG encode correction" section for the full story.
 

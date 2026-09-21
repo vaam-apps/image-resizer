@@ -303,6 +303,14 @@ rustls-graviola = "0.4"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+# Perceptual metric for `examples/codec_report.rs`, which compares every output
+# format at matched DSSIM rather than at matched nominal quality - the latter
+# is meaningless across encoders. Dev-only; not linked into the service.
+dssim-core = "3.5"
+
+[[example]]
+name = "codec_report"
+path = "examples/codec_report.rs"
 
 [profile.prod]
 inherits = "release"
