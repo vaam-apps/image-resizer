@@ -116,6 +116,11 @@ fn main() {
             let dir = args.next().expect("files dir");
             run_decode(&dir);
         }
+        "conform" => {
+            let dir = args.next().expect("files dir");
+            let out = args.next().expect("out dir");
+            run_conform(&dir, &out);
+        }
         other => panic!("unknown mode {other}"),
     }
 }
@@ -180,6 +185,34 @@ fn run_encode(corpus: &str, out: &str) {
             }
         }
         eprintln!("done {name}");
+    }
+}
+
+/// Decodes every file and writes the decoded RGB8 planes to `<out>/<file>.rgb`,
+/// so two builds can be compared pixel-for-pixel.
+///
+/// VP8 (WebP) and AV1 (AVIF) decoding are exactly specified: a conforming
+/// decoder must produce bit-identical output, so any difference at all is a
+/// bug in one of them. JPEG is not - the standard leaves IDCT precision open,
+/// so small per-pixel differences are legitimate and only large ones indicate
+/// a fault.
+fn run_conform(dir: &str, out: &str) {
+    std::fs::create_dir_all(out).unwrap();
+    println!("file,format,width,height,bytes");
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .expect("files dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e != "rgb"))
+        .collect();
+    files.sort();
+    for path in &files {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let Some(fmt) = name.split("__").nth(1) else { continue };
+        let bytes = std::fs::read(path).unwrap();
+        let img = decode(fmt, &bytes).to_rgb8();
+        let (w, h) = (img.width(), img.height());
+        std::fs::write(Path::new(out).join(format!("{name}.rgb")), img.as_raw()).unwrap();
+        println!("{name},{fmt},{w},{h},{}", img.as_raw().len());
     }
 }
 

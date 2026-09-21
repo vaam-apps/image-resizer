@@ -4317,7 +4317,7 @@ dependencies = [
 [[package]]
 name = "vaam-image-webp"
 version = "0.3.0-vaam.1"
-source = "git+https://github.com/vaam-apps/vaam-image-webp?rev=e4d12e5#e4d12e52fd2c8ba013fa634a6e6a567f314218a8"
+source = "git+https://github.com/vaam-apps/vaam-image-webp?rev=43f3d2b#43f3d2b21ea84402d9ab1550a4c4d18154822ca3"
 dependencies = [
  "byteorder-lite",
  "quick-error",

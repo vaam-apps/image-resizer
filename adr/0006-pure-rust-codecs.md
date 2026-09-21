@@ -205,6 +205,65 @@ different bitstreams - that measures content, not decoder speed. The like-for-li
 table above is the real answer. Checking a fixed pre-encoded corpus into the repo
 would fix the benches themselves.
 
+## Are the replacements actually *correct*? (audited 2026-09-21)
+
+Everything above measures size and speed. That is not the same question as
+whether these implementations are right, so the decoders were checked directly:
+the same C-encoded files decoded by both builds, compared pixel for pixel
+(`examples/codec_report.rs conform`), 72 files per format.
+
+| Format | bit-exact | max abs diff | mean abs diff | verdict |
+|---|---|---|---|---|
+| **WebP** | **72/72** | 0 | 0.00000 | conformant |
+| JPEG | 0/72 | 4 | 0.047 | expected |
+| JPEG progressive | 0/72 | 4 | 0.050 | expected |
+| **AVIF** | 0/72 | **64** | **0.785** | **investigate** |
+
+VP8 and AV1 decoding are exactly specified, so a conforming decoder must be
+bit-identical. JPEG is not - the standard deliberately leaves IDCT precision
+open - so a max difference of 4 is normal.
+
+**The pure-Rust VP8 decoder is bit-exact against libwebp on every file.**
+
+**AVIF is not, and the difference is systematic rather than random.** `rav1d`'s
+output is brighter than libavif's on all three channels in all 72 files (mean
++0.527 R, +0.520 G, +0.555 B; every file positive, min +0.076, max +0.920). A
+uniform ~+0.5 offset is the signature of a rounding or range-conversion
+disagreement in **YUV -> RGB**, not of a fault in AV1 decoding itself - rav1d is
+a line-by-line port of dav1d, and the residual would not be uniform if the
+coefficient path differed. Against the original images libavif is closer in
+**72 of 72** cases (median MSE 35.47 vs 37.22, ~5% worse).
+
+The practical effect is about 0.2% brightness, which is imperceptible. It is
+recorded because it is a real, consistent fidelity loss that nothing in the test
+suite was checking, and because "the decoder is a faithful port" was being taken
+on trust. Worth tracing to `avif-decode`'s use of the `yuv` crate versus
+libavif's own conversion before assuming it is harmless.
+
+## What the WebP encoder is still missing
+
+The remaining ~1.9-2.2x is structural, and the gaps are visible in the source
+rather than inferred:
+
+| Gap | Evidence | Status |
+|---|---|---|
+| Loop filter never applied | `loop_filter::` appears only in the decoder | **fixed**: level was 63, now 0, mean -4.0% |
+| B_PRED (4x4 intra) | `LumaMode::B => unreachable!()` in the encoder | not implemented |
+| Adaptive quantisation | `segments_enabled: false`, and `todo!()` if set | not implemented |
+| Token probability adaptation | "currently just not updating these" | not implemented |
+| Trellis / token optimisation | absent | not implemented |
+
+The loop-filter finding is worth generalising: `filter_level` was signalled at
+the maximum while the encoder never ran the filter, so it predicted from
+unfiltered pixels while the decoder predicted from filtered ones. A sweep across
+0/8/16/32/63 degrades monotonically - the signature of encoder/decoder drift
+rather than a quality trade. Fixing it properly (filter the reconstruction, then
+derive the level from the quantiser) should beat 0, since the filter exists to
+help prediction.
+
+B_PRED is likely the largest remaining item: libwebp leans on it heavily for
+detailed blocks, and this encoder cannot emit it at all.
+
 ## A correctness bug found on the way
 
 Implementing mode decision in the WebP fork surfaced a latent bug in its boolean encoder.
