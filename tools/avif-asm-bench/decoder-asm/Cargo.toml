@@ -1,0 +1,30 @@
+# One half of the issue #138 comparison harness (see `../README.md` for the
+# full explanation of why this lives in its own crate/workspace rather than
+# alongside `decoder-noasm` in one binary).
+#
+# This crate's ONLY dependency is upstream `avif-decode` 3, unmodified. On
+# x86/x86_64 its own `[target.'cfg(any(target_arch = "x86", target_arch =
+# "x86_64"))'.dependencies]` table declares plain `rav1d = "1.1.0"` - no
+# `default-features = false` - so rav1d's *default* feature set applies,
+# which includes `asm` (confirmed by fetching upstream's Cargo.toml and
+# rav1d's own `[features] default = ["asm", ...]`). Being the ONLY thing in
+# this isolated workspace that depends on rav1d at all, there is nothing
+# else in the graph to union features with, so this is a true, unpolluted
+# asm-on build - unlike linking this next to the no-asm fork in one binary,
+# which Cargo's feature unification would silently merge into a single
+# asm-on `rav1d` shared by both (verified empirically; see the top-level
+# harness's own comment for the `cargo tree -e features -i rav1d` evidence).
+[workspace]
+
+[package]
+name = "decoder-asm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "decoder-asm"
+path = "src/main.rs"
+
+[dependencies]
+avif-decode = { version = "3", default-features = false }
