@@ -760,16 +760,14 @@ impl ImageService {
     ///   `crate::services::image::avif_codec` and the AVIF arm of
     ///   `decode_with_limits` above - so an AVIF *source*'s metadata now
     ///   reaches this path too, not only JPEG/PNG/WebP sources.)
-    /// - **WebP**: **unsupported, always** - this crate's lossy WebP output
-    ///   goes through the standalone `webp` crate (`Self::encode_webp`), not
-    ///   `image`'s own `WebPEncoder` (see that function's own doc comment
-    ///   for why); `webp` 0.3.1's `Encoder` has no EXIF/ICC API whatsoever
-    ///   (verified against its public API - `new`/`from_image`/`from_rgb`/
-    ///   `from_rgba`/`encode`/`encode_lossless`/`encode_simple`/
-    ///   `encode_advanced`, nothing metadata-related). `sm:0` against a
-    ///   `.webp` output is therefore a no-op - not a bug, a real limitation
-    ///   of the encoder this crate uses, same as ICC already is for this
-    ///   format.
+    /// - **WebP**: **supported since #148.** This used to read "unsupported,
+    ///   always", correctly, of the standalone `webp` 0.3.1 crate, whose
+    ///   `Encoder` really had no metadata API. That crate left the build with
+    ///   the C-dependency removal; `image_webp::WebPEncoder` replaced it and
+    ///   does have `set_icc_profile`/`set_exif_metadata`, which
+    ///   `Self::encode_webp` now calls. `sm:0` against a `.webp` output keeps
+    ///   both, and a non-empty blob moves the output to WebP's extended
+    ///   (`VP8X`) container so it has `ICCP`/`EXIF` chunks to live in.
     /// - **GIF**: **unsupported, always** - neither `image`'s `GifEncoder`
     ///   nor the GIF format itself (via this crate's decoder) has any EXIF
     ///   concept (verified: no `exif`/`Exif` hit anywhere in
@@ -1003,20 +1001,20 @@ impl ImageService {
         //
         // #33: `icc_profile`, if the source carried one, is forwarded to
         // the PNG/JPEG encoders - both support embedding it
-        // (`image-0.25.10/src/codecs/{png,jpeg/encoder}.rs`). WebP and AVIF
-        // still do not carry it, for two *different* reasons - and the
-        // earlier revision of this comment had them exactly backwards,
-        // because it described the pre-#134 stack (the `webp` crate 0.3.1
-        // and libavif/AOM), neither of which is in this build any more:
+        // (`image-0.25.10/src/codecs/{png,jpeg/encoder}.rs`), and to WebP
+        // since #148. AVIF is the only format left that cannot carry it -
+        // and note that an older revision of this comment had WebP and AVIF
+        // exactly backwards, because it described the pre-#134 stack (the
+        // `webp` crate 0.3.1 and libavif/AOM), neither of which is in this
+        // build any more:
         //
-        // - **WebP is not a capability gap, it is unwired** (#148).
-        //   `image_webp::WebPEncoder` - the encoder `encode_webp` already
-        //   constructs a few hundred lines below - exposes
-        //   `set_icc_profile`, `set_exif_metadata` and `set_xmp_metadata`.
-        //   `encode_webp` calls only `set_params`, so ICC *and* EXIF are
-        //   dropped on every WebP response even though the encoder in hand
-        //   accepts both. That is a small fix, tracked separately.
-        // - **AVIF is the hard limit now.** `ravif` 0.13 and the
+        // - **WebP carries both now** (#148). `image_webp::WebPEncoder`
+        //   exposes `set_icc_profile`/`set_exif_metadata`, and
+        //   `Self::encode_webp` forwards them the same way the PNG and JPEG
+        //   arms below do. (`set_xmp_metadata` also exists, but nothing in
+        //   this service reads XMP from a source, so there is nothing to
+        //   forward.)
+        // - **AVIF is the hard limit.** `ravif` 0.13 and the
         //   `avif-serialize` 0.8 muxer underneath it contain no ICC code at
         //   all - not a missing call, no `colr`-writing capability exists to
         //   call. (The old comment pointed at `avifImageSetProfileICC`; that
@@ -1044,7 +1042,13 @@ impl ImageService {
                     .map(f32::from)
                     .unwrap_or(DEFAULT_WEBP_QUALITY);
 
-                Self::encode_webp(&img, quality, lossless)
+                // Same borrow shape the PNG and JPEG arms below use:
+                // `icc_profile`/`exif_metadata` are `Option<Vec<u8>>` owned
+                // by this function, and each arm takes its own slice view.
+                let icc_ref = icc_profile.as_deref();
+                let exif_ref = exif_metadata.as_deref();
+
+                Self::encode_webp(&img, quality, lossless, icc_ref, exif_ref)
                     .context(format!("Failed to encode image to {:?}", output_format))?
             }
             ImageFormat::Png => {
@@ -2312,7 +2316,13 @@ impl ImageService {
     /// `..Default::default()` struct-literal syntax from outside the
     /// crate - `Default::default()` plus field mutation is the only
     /// available construction path.
-    pub fn encode_webp(img: &DynamicImage, quality: f32, lossless: bool) -> Result<Vec<u8>> {
+    pub fn encode_webp(
+        img: &DynamicImage,
+        quality: f32,
+        lossless: bool,
+        icc_profile: Option<&[u8]>,
+        exif_metadata: Option<&[u8]>,
+    ) -> Result<Vec<u8>> {
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
 
@@ -2323,6 +2333,31 @@ impl ImageService {
         let mut buf = Vec::new();
         let mut encoder = image_webp::WebPEncoder::new(&mut buf);
         encoder.set_params(params);
+
+        // #148: both were dropped on every WebP response until now, not for
+        // want of encoder support - `WebPEncoder` has had these setters all
+        // along - but because this function never took the arguments. The
+        // PNG and JPEG arms beside it in `encode_single_image` have always
+        // forwarded them.
+        //
+        // Unlike `PngEncoder`'s equivalents these return `()` rather than a
+        // `Result`, so there is nothing to ignore: a non-empty profile or
+        // EXIF blob simply switches the output to WebP's extended (`VP8X`)
+        // container, which carries `ICCP`/`EXIF` chunks. Empty stays on the
+        // simple container, so the guards below keep a metadata-free image
+        // byte-identical to what this produced before.
+        //
+        // `strip_metadata` is already applied by the caller, and so is
+        // `neutralize_exif_orientation` when the pixels were auto-rotated -
+        // by the time a blob reaches here it is the one that should be
+        // written verbatim.
+        if let Some(icc) = icc_profile.filter(|i| !i.is_empty()) {
+            encoder.set_icc_profile(icc.to_vec());
+        }
+        if let Some(exif) = exif_metadata.filter(|e| !e.is_empty()) {
+            encoder.set_exif_metadata(exif.to_vec());
+        }
+
         encoder
             .encode(rgba.as_raw(), width, height, image_webp::ColorType::Rgba8)
             .context("image-webp: failed to encode WebP")?;
@@ -8394,22 +8429,13 @@ mod tests {
         assert_eq!(decoded_exif(&output, ImageFormat::Png), None);
     }
 
-    /// #5's per-format matrix: `sm:0` against a `.webp` output is currently
-    /// a no-op - not because `image_webp::WebPEncoder` lacks the API (the C-dependency removal:
-    /// unlike the `webp` crate this replaced, it has real
-    /// `set_exif_metadata`/`set_icc_profile` methods), but because
-    /// `Self::encode_webp`'s public signature was deliberately kept
-    /// unchanged during the codec swap (see that function's own doc
-    /// comment) and nothing calls them yet. Wiring `icc_profile`/
-    /// `exif_metadata` through `encode_webp` is a real, available
-    /// improvement - TODO(re-measure): thread them through the same way
-    /// `encode_jpeg`/`encode_png` already do, once a signature change for
-    /// `encode_webp` is in scope. Proven directly against the output bytes
-    /// rather than just asserting `encode_single_image` didn't panic, so
-    /// that improvement landing would be caught by this test needing to
-    /// change, not silently.
+    /// #5's per-format matrix, WebP arm. This test used to assert the
+    /// opposite - that `sm:0` was a no-op for WebP - and said in as many
+    /// words that "that improvement landing would be caught by this test
+    /// needing to change, not silently". #148 is that improvement, and this
+    /// is that change.
     #[test]
-    fn strip_metadata_false_has_no_effect_on_webp_output() {
+    fn strip_metadata_false_keeps_exif_in_webp_output() {
         let bytes = fixtures::jpeg_with_gps_exif(1);
         let config = PerformanceConfig::default();
         let params = ResizeQuery {
@@ -8421,11 +8447,106 @@ mod tests {
         let (output, _) = ImageService::process_image_blocking_with_limits(&bytes, &params, &config)
             .expect("processing should succeed");
 
+        let exif = decoded_exif(&output, ImageFormat::WebP)
+            .expect("sm:0 must now keep Exif in WebP output (#148)");
+        assert!(
+            exif.windows(GPS_LATITUDE_REF_NORTH.len())
+                .any(|w| w == GPS_LATITUDE_REF_NORTH),
+            "the kept Exif must be the source's own, not an empty block"
+        );
+    }
+
+    /// The other half of the matrix, and the reason the test above is not
+    /// enough on its own: wiring metadata through must not defeat `sm:1`.
+    #[test]
+    fn strip_metadata_true_drops_exif_from_webp_output() {
+        let bytes = fixtures::jpeg_with_gps_exif(1);
+        let config = PerformanceConfig::default();
+        let params = ResizeQuery {
+            format: ApiImageFormat::Webp,
+            strip_metadata: true,
+            ..query(None, None)
+        };
+
+        let (output, _) = ImageService::process_image_blocking_with_limits(&bytes, &params, &config)
+            .expect("processing should succeed");
+
         assert_eq!(
             decoded_exif(&output, ImageFormat::WebP),
             None,
-            "encode_webp doesn't wire EXIF through yet (the C-dependency removal TODO) - sm:0 is currently a no-op \
-             for WebP output"
+            "sm:1 must still strip Exif from WebP output"
+        );
+    }
+
+    /// WebP now travels the same orientation path as JPEG/PNG, so it
+    /// inherits the same double-rotation hazard: if the pixels were already
+    /// auto-rotated, a kept Exif block whose Orientation tag still says 6
+    /// would make a viewer rotate a second time. Mirrors
+    /// `kept_metadata_neutralizes_stale_orientation_to_avoid_double_rotation`
+    /// for the format that could not reach that code path until #148.
+    #[test]
+    fn webp_output_neutralizes_stale_orientation_to_avoid_double_rotation() {
+        let bytes = fixtures::jpeg_with_gps_exif(6);
+        let config = PerformanceConfig::default();
+        let params = ResizeQuery {
+            format: ApiImageFormat::Webp,
+            strip_metadata: false,
+            autorotate: true,
+            ..query(None, None)
+        };
+
+        let (output, _) = ImageService::process_image_blocking_with_limits(&bytes, &params, &config)
+            .expect("processing should succeed");
+
+        let exif = decoded_exif(&output, ImageFormat::WebP)
+            .expect("Exif must still be present (kept, just orientation-neutralized)");
+        assert_eq!(
+            Orientation::from_exif_chunk(&exif),
+            Some(Orientation::NoTransforms),
+            "autorotate already rotated the pixels, so the kept Exif's Orientation tag \
+             must read 1/NoTransforms or an Exif-aware viewer rotates twice"
+        );
+    }
+
+    /// The colour-fidelity half of #148, and the one with user-visible
+    /// consequences: a non-sRGB source rendered without its profile is
+    /// simply the wrong colours, silently. Builds a PNG source carrying an
+    /// ICC profile rather than reaching for a fixture, since no existing
+    /// helper produces one.
+    #[test]
+    fn webp_output_keeps_the_source_icc_profile() {
+        let icc: &[u8] = b"\0\0\x02\x0CICC_TEST_PROFILE_PAYLOAD";
+
+        let mut png = Vec::new();
+        {
+            let img = image::RgbImage::from_pixel(8, 8, image::Rgb([10, 200, 90]));
+            let mut encoder = image::codecs::png::PngEncoder::new(Cursor::new(&mut png));
+            encoder
+                .set_icc_profile(icc.to_vec())
+                .expect("PngEncoder supports ICC");
+            encoder
+                .write_image(img.as_raw(), 8, 8, image::ExtendedColorType::Rgb8)
+                .expect("PNG fixture should encode");
+        }
+
+        let config = PerformanceConfig::default();
+        let params = ResizeQuery {
+            format: ApiImageFormat::Webp,
+            strip_metadata: false,
+            ..query(None, None)
+        };
+
+        let (output, _) = ImageService::process_image_blocking_with_limits(&png, &params, &config)
+            .expect("processing should succeed");
+
+        let profile = image_webp::WebPDecoder::new(Cursor::new(&output))
+            .expect("output should have a valid WebP header")
+            .icc_profile()
+            .expect("icc_profile() read should not itself fail")
+            .expect("the source's ICC profile must survive into WebP output (#148)");
+        assert_eq!(
+            profile, icc,
+            "the profile must be carried verbatim, not re-synthesised"
         );
     }
 

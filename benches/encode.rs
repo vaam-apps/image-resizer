@@ -121,7 +121,7 @@ fn bench_encode(c: &mut Criterion) {
 
         group.bench_function(BenchmarkId::new("webp", *kind), |b| {
             b.iter(|| {
-                ImageService::encode_webp(img, DEFAULT_WEBP_QUALITY, false)
+                ImageService::encode_webp(img, DEFAULT_WEBP_QUALITY, false, None, None)
                     .expect("encode fixture")
             });
         });
