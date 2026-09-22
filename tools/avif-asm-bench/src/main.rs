@@ -123,10 +123,14 @@ fn run() -> Result<(), String> {
     );
     if !asm_has_asm {
         println!(
-            "NOTE: target {target_triple} does not enable asm for the asm-on side either \
-             (expected on non-x86/x86_64, e.g. this is aarch64) - a ratio near 1.0 below is \
-             the correct local result, not a measurement of #138. Run this on an x86_64 \
-             GitHub Actions runner via the avif-asm-bench workflow for the real number."
+            "NOTE: the asm-on side reports no asm for target {target_triple}. On a \
+             non-x86 target that is expected - upstream only enables asm for x86/x86_64 - \
+             and a ratio near 1.0 below is the correct result rather than a measurement of \
+             #138; run the avif-asm-bench workflow on an x86_64 runner for that. On an \
+             x86/x86_64 target this line is itself the bug: check it against the ratios \
+             below before believing either. A large ratio with this note present means the \
+             detection is wrong, not the timings - assembly is the only feature that \
+             differs between the two sides."
         );
     }
     if noasm_has_asm {
@@ -451,6 +455,22 @@ fn asm_feature_enabled(crate_dir: &Path, target_triple: &str) -> Result<bool, St
         ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // `cargo tree -i` prints "nothing to print" and exits 0 when the package
+    // is not in the graph at all, so an absent `rav1d` line cannot be read as
+    // "asm is off" - it is indistinguishable from "this ran somewhere wrong".
+    // That distinction is not academic: the #138 CI run reported `asm enabled
+    // = false` for BOTH sides while the two binaries differed by 3.03x, and
+    // printed a note telling the reader to dismiss the real numbers as a null
+    // result. Refuse to answer rather than answer falsely - the same rule
+    // `ci.yml`'s `no-native-deps` job had to learn.
+    if !stdout.lines().any(|line| line.contains("rav1d")) {
+        return Err(format!(
+            "cargo tree in {crate_dir:?} produced no `rav1d` line for target \
+             {target_triple}, so the asm feature cannot be determined. Output was:\n{stdout}"
+        ));
+    }
+
     Ok(stdout.lines().any(|line| {
         line.trim_start_matches(|c: char| !c.is_alphanumeric() && c != '"')
             == "rav1d feature \"asm\""

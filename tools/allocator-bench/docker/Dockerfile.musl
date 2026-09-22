@@ -1,0 +1,99 @@
+# static musl variant for #144's allocator measurement: same source tree,
+# same `--no-default-features --features local_fs`, same `perf` profile as
+# the glibc variant (Dockerfile.glibc) and the production Dockerfile - only
+# the target triple, libc and runtime base differ.
+#
+# Same builder image/digest as the glibc variant, so any difference between
+# the two binaries traces to libc/target, not to a different toolchain
+# version. `musl-tools` (providing `musl-gcc`, and its `aarch64-linux-musl-
+# gcc`/`x86_64-linux-musl-gcc` symlinks) is available directly from Debian
+# bookworm's own repos on both amd64 and arm64 - confirmed by hand before
+# writing this file, not assumed - so no third-party cross-compilation image
+# is needed as long as the build runs on the SAME architecture as the
+# target triple (native, not cross-arch). This bench builds and runs on
+# Docker Desktop's native linux/aarch64, so TARGET below is
+# aarch64-unknown-linux-musl; rerunning on x86_64 needs
+# x86_64-unknown-linux-musl + x86_64-linux-musl-gcc instead - see the
+# README for how to parameterize this if both architectures are ever
+# compared.
+FROM rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
+
+ARG MUSL_TARGET=aarch64-unknown-linux-musl
+ARG MUSL_LINKER=aarch64-linux-musl-gcc
+
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends musl-tools ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup target add ${MUSL_TARGET}
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY benches ./benches
+
+# `+crt-static` is musl targets' documented default already, but set
+# explicitly rather than relied upon - a default is exactly the kind of
+# thing a future rustc/target change silently flips, and this bench's whole
+# point is proving the binary is genuinely static (verified again at
+# runtime in scripts/verify-static.sh via `file`/`ldd`, not just assumed
+# from this flag being present).
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=${MUSL_LINKER}
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=${MUSL_LINKER}
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+
+RUN cargo build --profile perf --locked --bin emgr --no-default-features --features="local_fs" \
+    --target ${MUSL_TARGET} \
+    && cp ./target/${MUSL_TARGET}/perf/emgr /app/emgr.out
+
+FROM scratch AS runtime
+
+# *** BENCH-ONLY ACCOMMODATION - discovered while wiring this bench up,
+# NOT a decision on #144's separate "CA trust store" scope item ***
+#
+# `services::image::handler::ImageService::build_pinned_client` builds a
+# fresh `reqwest::Client` PER OUTBOUND FETCH (not once at startup). Even
+# though every source fetch here is plain HTTP - deliberately, to keep TLS
+# out of this measurement - `reqwest`'s `ClientBuilder::build()` still
+# EAGERLY constructs its TLS backend's certificate verifier up front,
+# regardless of whether the request that follows ever uses TLS. On `scratch`
+# (no `/etc/ssl/certs`, no CA bundle at all) that eager verifier
+# construction fails outright, confirmed by hand with a minimal reqwest+
+# rustls-graviola repro run both with and without a CA bundle present:
+#
+#   no bundle:  reqwest::Error { kind: Builder, source: General("No CA
+#               certificates were loaded from the system") }
+#   bundle present at /etc/ssl/certs/ca-certificates.crt: builds fine
+#
+# Practical effect without this line: the musl/scratch container answers
+# `/health` (no outbound fetch involved) but returns `502 Bad Gateway` on
+# EVERY resize request - 0% success, no decode/resize/encode work ever
+# happens, and there is no RSS/throughput number to measure. This is a
+# stronger and more surprising version of #144's own "CA trust store" item
+# (that item describes only *HTTPS* fetches failing on `scratch`; this is
+# *every* fetch, HTTP included, because the client is rebuilt per request
+# and the verifier is built eagerly, not lazily on first real TLS use).
+#
+# The one line below (`COPY ... ca-certificates.crt`) is the smallest
+# possible unblock: `ca-certificates` is Debian's plain CA-bundle *data*
+# package (no C code, nothing linked into the binary), copied to the exact
+# path `rustls-native-certs`'s `openssl-probe` already checks by default on
+# Linux. It does not bundle anything the production `Dockerfile` doesn't
+# already need to solve one way or another - it just makes the choice of
+# "bundle the file" here, purely so this specific measurement can produce
+# data, without deciding between bundling vs `webpki-roots` for production
+# (still #144's own item, still untouched by this bench).
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+ENV PORT=3000
+ENV HOST=0.0.0.0
+ENV LOCAL_FS_STORAGE_PATH=/data/images
+ENV ALLOW_UNSIGNED_REQUESTS=true
+
+WORKDIR /app
+EXPOSE 3000
+
+COPY --from=builder /app/emgr.out /app/emgr
+
+ENTRYPOINT ["/app/emgr"]
