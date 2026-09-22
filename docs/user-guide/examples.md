@@ -150,10 +150,14 @@ GET /PxkE0dXMg8tHKsJKnbMkrUrA1tDnqVmjJvUGNyh8ji0/rs:fit:800:0/aHR0cHM6Ly9pbWFnZX
 
 `.auto` isn't a real output format — it's resolved against the request's
 `Accept` header before the image is ever processed
-(`crate::modules::negotiation::resolve`): AVIF if the client advertises
-it, else WebP, else JPEG, weighted by each entry's `q` parameter. The
-response carries `Vary: Accept` so caches don't serve a negotiated result
-to a client that asked for something different:
+(`crate::modules::negotiation::resolve`): AVIF first, since it's 17-32%
+smaller than JPEG at matched quality; then WebP, not for size (it's
+roughly on par with JPEG now) but because it's the only alpha-capable
+option for a client that accepts WebP but not AVIF — JPEG has no alpha
+channel and gets flattened onto a background; else JPEG. Weighted by
+each entry's `q` parameter. The response carries `Vary: Accept` so
+caches don't serve a negotiated result to a client that asked for
+something different:
 
 ```bash
 curl -L -o photo.avif \

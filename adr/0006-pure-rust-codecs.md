@@ -423,7 +423,8 @@ Explicitly *not* regressions, contrary to an earlier revision of this ADR:
 
 - **Default JPEG output size is at parity** (0.995x-1.000x). The earlier 1.16x-1.41x figure
   measured the wrong mozjpeg configuration - see the size section.
-- **AVIF output is only 4-16% larger**, and remains 21-43% smaller than JPEG.
+- **AVIF output is only 4-16% larger**, and remains 17-32% smaller than JPEG (#135 - it
+  was 21-43% before the progressive-scan and Huffman fixes improved JPEG underneath it).
 - **AVIF encode is faster at low and mid quality** at matched perceptual quality.
 - **AVIF decode is only 1.28x slower** - with rav1d's assembly disabled against dav1d with
   NEON enabled.
@@ -461,9 +462,12 @@ Not measured, and honestly unknown:
 
 Open work, in rough order of value:
 
-1. **Re-tune `.auto` negotiation** (#135). AVIF is 21-43% smaller than JPEG and WebP is now
-   *larger* than JPEG, so the current preference order is actively costing bytes on every
-   WebP delivery. This is the highest-value item and needs no codec work.
+1. **Fix the `.auto` negotiation rationale** (#135). The preference order (AVIF, then WebP,
+   then JPEG) was already correct and needed no reordering — AVIF is genuinely 17-32% smaller
+   than JPEG at matched quality. What was actually wrong was the *stated reason* for WebP:
+   code comments and docs claimed it beat JPEG on size, which these measurements no longer
+   support (WebP is now roughly on par with JPEG, larger above the loosest target). WebP stays
+   ahead of JPEG for alpha support, not size. #135 corrected the rationale, not the ordering.
 2. Reduce WebP encode cost (#136) and apply the loop filter properly (#137). Until then WebP
    earns its place only for clients that accept it but not AVIF.
 3. Confirm rav1d-without-asm on x86_64 (#138), and measure the allocator (#144) - the two
