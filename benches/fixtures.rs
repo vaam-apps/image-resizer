@@ -337,9 +337,12 @@ pub fn gravity_marker() -> Vec<u8> {
     })
 }
 
-/// Same photo-like content, at an arbitrary size/format - used by the decode
-/// benchmark to cover multiple resolutions per codec without hand-generating
-/// each one.
+/// Same photo-like content, at an arbitrary size/format - used by
+/// `benches/pipeline.rs` (`photo_4k`) and `src/services/image/handler.rs`'s
+/// own test module to cover sizes/formats beyond the fixed set `photo_like`
+/// provides, without hand-generating each one. `benches/decode.rs` now reads
+/// its fixtures from the checked-in corpus in `benches/fixtures/decode/`
+/// instead (#139) rather than calling this.
 pub fn photo_like_sized(width: u32, height: u32, format: ImageFormat) -> Vec<u8> {
     let ext = match format {
         ImageFormat::Jpeg => "jpg",
@@ -350,29 +353,6 @@ pub fn photo_like_sized(width: u32, height: u32, format: ImageFormat) -> Vec<u8>
     cached(&format!("photo_like_{width}x{height}.{ext}"), || {
         let img = DynamicImage::ImageRgb8(gradient_noise_rgb(width, height));
         encode(&img, format)
-    })
-}
-
-/// Same photo-like content, at an arbitrary size, AVIF-encoded via the
-/// caller-supplied `encode_fn` (#67/#68) - deliberately *not* calling
-/// `avif_codec::encode` directly here (unlike `photo_like_sized`'s
-/// `image::write_to` call above): this module is `#[path]`-included from
-/// three different compilation contexts (`handler.rs`'s own test module,
-/// inside the `emgr` lib crate itself; `benches/*.rs` and `tests/*.rs`,
-/// separate crates that depend on `emgr` externally), and those two
-/// contexts need opposite spellings (`crate::services::...` inside the
-/// lib, `emgr::services::...` outside it) to name the same function -
-/// there is no single path that resolves in both. Accepting the encoder
-/// as a parameter sidesteps that entirely: each caller passes whichever
-/// spelling is correct for its own compilation context.
-pub fn photo_like_sized_avif(
-    width: u32,
-    height: u32,
-    encode_fn: impl FnOnce(&DynamicImage) -> Vec<u8>,
-) -> Vec<u8> {
-    cached(&format!("photo_like_{width}x{height}.avif"), || {
-        let img = DynamicImage::ImageRgb8(gradient_noise_rgb(width, height));
-        encode_fn(&img)
     })
 }
 
@@ -413,8 +393,8 @@ const REAL_PHOTO_SECONDARY_BYTES: &[u8] = include_bytes!("fixtures/real/earthris
 /// Decode one of the embedded real-photo sources. Not cached on disk like
 /// the generated fixtures below - decoding a ~300KB/~80KB JPEG once per
 /// process is cheap enough not to need it, and the *output* of
-/// `real_photo_sized`/`real_photo_sized_avif` (which do get disk-cached)
-/// is what repeated `cargo bench` runs actually reuse.
+/// `real_photo_sized` (which does get disk-cached) is what repeated
+/// `cargo bench` runs actually reuse.
 fn real_photo_base(bytes: &'static [u8]) -> DynamicImage {
     image::load_from_memory_with_format(bytes, ImageFormat::Jpeg)
         .expect("embedded real-photo fixture should always decode")
@@ -442,9 +422,12 @@ fn cover_resize(base: &DynamicImage, width: u32, height: u32) -> RgbImage {
 /// Real-photo content (the primary source, `blue-marble.jpg`) at an
 /// arbitrary size/format - the real-photo counterpart to
 /// `photo_like_sized` above, same signature, same disk-cache scheme. Every
-/// size this benchmark suite requests (max 1920x1080, `benches/decode.rs`'s
-/// `SIZES`) is a pure downscale of the embedded 2200x1100 source - never an
-/// upscale - by construction (see `ATTRIBUTION.md`).
+/// size this benchmark suite requests (max 2200x1100, `benches/pipeline.rs`'s
+/// `photo_real_large`) is a pure downscale of the embedded 2200x1100 source -
+/// never an upscale - by construction (see `ATTRIBUTION.md`).
+/// `benches/decode.rs` now reads its own real-photo fixtures from the
+/// checked-in corpus in `benches/fixtures/decode/` instead (#139) rather
+/// than calling this.
 pub fn real_photo_sized(width: u32, height: u32, format: ImageFormat) -> Vec<u8> {
     let ext = match format {
         ImageFormat::Jpeg => "jpg",
@@ -456,21 +439,6 @@ pub fn real_photo_sized(width: u32, height: u32, format: ImageFormat) -> Vec<u8>
         let base = real_photo_base(REAL_PHOTO_PRIMARY_BYTES);
         let img = DynamicImage::ImageRgb8(cover_resize(&base, width, height));
         encode(&img, format)
-    })
-}
-
-/// AVIF counterpart to `real_photo_sized`, mirroring
-/// `photo_like_sized_avif`'s caller-supplied-encoder pattern (see that
-/// function's own doc comment for why).
-pub fn real_photo_sized_avif(
-    width: u32,
-    height: u32,
-    encode_fn: impl FnOnce(&DynamicImage) -> Vec<u8>,
-) -> Vec<u8> {
-    cached(&format!("real_photo_{width}x{height}.avif"), || {
-        let base = real_photo_base(REAL_PHOTO_PRIMARY_BYTES);
-        let img = DynamicImage::ImageRgb8(cover_resize(&base, width, height));
-        encode_fn(&img)
     })
 }
 
