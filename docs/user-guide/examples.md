@@ -56,7 +56,7 @@ print(f"/{signature}{path}")
 
 ### Thumbnail
 
-```
+```http
 GET /USj4F2ERoKKugAeQ54JQct8oGudbkUzGYdIuJncZawk/rs:fit:200:200/q:80/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.webp
 ```
 
@@ -66,7 +66,7 @@ encoded as WebP.
 
 ### Fill-crop with gravity
 
-```
+```http
 GET /GsN7dLZQjyIq4gDj5iKQBZvL2HZu63AZd7o5vRU8pJM/rs:fill:400:300/gr:no/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -85,13 +85,13 @@ below for what happens if you use imgproxy's own `g:` by mistake.
 Convert to AVIF (smallest, most modern; both encode and decode are
 supported — see the [format table](api-reference.md#plainbase64-sourceextension)):
 
-```
+```http
 GET /X20ne2Igk1DfeVV6z5WxY5Be4X-Vbei4l55EfcDN1wE/q:70/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.avif
 ```
 
 Convert to WebP with no other processing:
 
-```
+```http
 GET /V6QMdiu1wWZPyU7xF2lOlAVwzjUAZ_gK74g1N_InZ6Q/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.webp
 ```
 
@@ -100,7 +100,7 @@ source's own extension or content type.
 
 ### Quality control
 
-```
+```http
 GET /8rPY_ywRdyK5SJ0fkdkxHE4oJUYFZ7aHPEFdzWjebtE/rs:fit:1200:0/mb:150000/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -112,7 +112,7 @@ in the API reference for why WebP/PNG/AVIF/GIF ignore it.
 
 ### Watermarking
 
-```
+```http
 GET /cGTrlLki-lIUwMLHKqrTPQzEbtGjpxY3NG6yZ4Yh1Zc/rs:fit:800:600/wm:0.6:soea:16:16:0.2/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -129,14 +129,14 @@ text-watermarking option in this grammar at all.
 Requires `PRESETS=thumbnail=rs:fill:300:300/q:80` (or similar) configured
 on the server — see [Presets and the allowlist](api-reference.md#presets-pr-and-the-processing-option-allowlist).
 
-```
+```http
 GET /_K8QuPpYQSz_HDfhaUaWE5Intcf5K0dBqP2MSgEWRK8/pr:thumbnail/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
 Expands to exactly `rs:fill:300:300/q:80` server-side. A request can still
 override part of what a preset sets, since segments apply left to right:
 
-```
+```http
 GET /i7IX-wbqFpioTVJYdJtAIEmu2lyH6ERZSOfZEFoIsec/pr:thumbnail/q:95/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -144,7 +144,7 @@ Same 300x300 fill crop, but quality 95 instead of the preset's 80.
 
 ### `.auto` content negotiation
 
-```
+```http
 GET /PxkE0dXMg8tHKsJKnbMkrUrA1tDnqVmjJvUGNyh8ji0/rs:fit:800:0/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.auto
 ```
 
@@ -175,7 +175,7 @@ An imgproxy URL that anchors a fill crop with `g:no` (north gravity) does
 exactly one boolean argument in this service, and `no` fails to parse as
 one, so the request is rejected outright:
 
-```
+```http
 GET /{signature}/rs:fill:400:300/g:no/{base64 source}.jpg
 → 400 Bad Request: invalid value for processing option "g:no"
 ```
@@ -183,7 +183,7 @@ GET /{signature}/rs:fill:400:300/g:no/{base64 source}.jpg
 The fix is to rewrite `g:` to `gr:` for gravity, keeping `g:` reserved for
 grayscale:
 
-```
+```http
 GET /BBpe0KuAM-evlv6Imxy44EEt5Xk5gVRyIjaTL5nKKf0/gr:no/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -191,13 +191,13 @@ GET /BBpe0KuAM-evlv6Imxy44EEt5Xk5gVRyIjaTL5nKKf0/gr:no/aHR0cHM6Ly9pbWFnZXMuZXhhb
 
 ### Grayscale
 
-```
+```http
 GET /7Ydb5QQ5ZSOybTjD0wfHE6yBT-kpDSgd4xXZ9EwDhfc/g:true/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
 ### Explicit crop
 
-```
+```http
 GET /LdpbqOKHQgoBoq6W4hx_NEPgHNWyyHJFKCKoNbn5s6s/c:0.5:0.5:noea/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -206,7 +206,7 @@ fraction, since it's under `1.0`), anchored to the north-east corner.
 
 ### Trim and padding
 
-```
+```http
 GET /iBTsc8J02JiEo6WN4oFMrFk8wGsFWvsJk7DZDtlmcH8/t:10/pd:20/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.png
 ```
 
@@ -217,7 +217,7 @@ sides).
 
 ### Rotate and flip
 
-```
+```http
 GET /NeWEj5rX0EiNuc4olyJKkhqgxIfmSlpze7z0TPBLeJA/rot:90/fl:1:0/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -227,7 +227,7 @@ in the API reference.
 
 ### Responsive images with `dpr`
 
-```
+```http
 GET /8xN0tTepw8WnOinCA-oAbHMDBfIw5plK1bW7orSS87E/rs:fit:300:0/dpr:2/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -237,7 +237,7 @@ already has an explicit width or height set.
 
 ### JPEG tuning
 
-```
+```http
 GET /Ak3BWWUBgmlzDcM-GVlhHk4aiUOMNx6jBPKXIjsUHPM/jpgo:1:1/q:85/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.jpg
 ```
 
@@ -248,7 +248,7 @@ the first two of imgproxy's six `jpgo:` slots exist here — see
 
 ### Lossless WebP
 
-```
+```http
 GET /rsHnTgOJn7x03v3BhpexkmKoykNr8l-ivAMKc1GYUOk/webpo:lossless/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vcGhvdG8uanBn.webp
 ```
 
@@ -257,7 +257,7 @@ GET /rsHnTgOJn7x03v3BhpexkmKoykNr8l-ivAMKc1GYUOk/webpo:lossless/aHR0cHM6Ly9pbWFn
 Processing options can be freely combined as additional `/`-delimited
 segments, in any order:
 
-```
+```http
 GET /vtDmKFzheWdTv2Q8Kv2BVx0o77KVyvif0Z2nfxBlSEQ/rs:fill:800:600/q:80/bl:5/g:true/el:1/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc.webp
 ```
 
@@ -269,7 +269,7 @@ permitted, output WebP.
 The `plain/` form skips base64 encoding, at the cost of needing the URL's
 own reserved characters percent-encoded:
 
-```
+```http
 GET /{signature}/rs:fill:800:600/plain/https%3A%2F%2Fexample.com%2Fimage.jpg.webp
 ```
 
