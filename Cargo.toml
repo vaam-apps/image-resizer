@@ -258,7 +258,7 @@ url = "2.5"      # source-URL parsing and scheme validation (#21)
 ipnet = "2.9"    # private/link-local range checks for SSRF filtering (#21)
 
 # For hashing the cache key
-sha2 = "0.10"   # NOT "0": 0.11 changed finalize()'s return type and breaks the cache key
+sha2 = "0.11"   # NOT "0": 0.11 changed finalize()'s return type and breaks the cache key
 
 # For async traits
 async-trait = "0.1" # Required for async methods in traits
