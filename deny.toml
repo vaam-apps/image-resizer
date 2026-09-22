@@ -135,15 +135,11 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 # `unknown-git = "deny"` above means any git dependency must be named here.
-# vaam-image-webp (#134) is this org's fork of image-rs/image-webp, carried
-# only because no *published* crate encodes lossy WebP in pure Rust - upstream
-# has the encoder on `main` but has not released it. Cargo.toml pins it by
-# `rev`, so this allowance does not let arbitrary upstream commits in.
 #
-# This is meant to be temporary: when upstream releases lossy encoding, the
-# dependency should go back to crates.io and this entry should be deleted.
+# vaam-image-webp used to be listed here. It is now published on crates.io
+# (#168) and is an ordinary registry dependency, so the exception is gone -
+# which is what this list is for: it should shrink, not accumulate.
 allow-git = [
-    "https://github.com/vaam-apps/vaam-image-webp",
     # Fork of kornelski/avif-decode, carried only to build rav1d without its
     # `asm` feature on x86_64 - see Cargo.toml. Also meant to be temporary:
     # an upstream feature flag would let this go back to crates.io.
