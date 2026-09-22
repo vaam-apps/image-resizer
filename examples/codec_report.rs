@@ -91,7 +91,7 @@ fn encode(fmt: &str, img: &DynamicImage, q: u8) -> Vec<u8> {
     match fmt {
         "jpeg" => ImageService::encode_jpeg(img, q, false, false, None, None).expect("jpeg"),
         "jpegprog" => ImageService::encode_jpeg(img, q, true, false, None, None).expect("jpegprog"),
-        "webp" => ImageService::encode_webp(img, f32::from(q), false).expect("webp"),
+        "webp" => ImageService::encode_webp(img, f32::from(q), false, None, None).expect("webp"),
         "avif" => avif_codec::encode(img, q, AVIF_SPEED, None).expect("avif"),
         _ => unreachable!(),
     }
