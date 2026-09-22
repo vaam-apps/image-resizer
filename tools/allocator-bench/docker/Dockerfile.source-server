@@ -11,7 +11,20 @@
 FROM python:3.12-alpine
 
 WORKDIR /srv/fixtures
-COPY benches/fixtures/decode/*.jpg /srv/fixtures/
+COPY --chown=65532:65532 benches/fixtures/decode/*.jpg /srv/fixtures/
 
 EXPOSE 8080
+
+# Trivy DS-0002. `python:3.12-alpine` has no pre-made unprivileged user, so
+# one is created here. Serving static files needs no privilege at all.
+RUN addgroup -g 65532 -S bench && adduser -u 65532 -S -G bench bench
+USER 65532:65532
+
+# Trivy DS-0026. Unlike the two images under measurement, this one is a
+# long-lived server whose readiness the bench genuinely depends on - if it is
+# not serving, every request under test 404s and the run is silently
+# meaningless. So the healthcheck is real rather than scanner appeasement.
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+  CMD ["python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/').status==200 else 1)"]
+
 CMD ["python3", "-m", "http.server", "8080", "--bind", "0.0.0.0"]

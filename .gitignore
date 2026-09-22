@@ -19,3 +19,8 @@ charts
 # ci/commit-message-parse is a standalone npm project (release-please
 # adoption); its own node_modules must never be committed.
 node_modules/
+
+# #144 allocator-measurement bench output (RSS CSVs, extracted binaries,
+# build logs, response-byte samples) - reproducible from
+# tools/allocator-bench/scripts/run-bench.sh, not source.
+tools/allocator-bench/results/

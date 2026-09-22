@@ -43,7 +43,19 @@ ENV ALLOW_UNSIGNED_REQUESTS=true
 WORKDIR /app
 EXPOSE 3000
 
-COPY --from=builder /app/emgr.out /app/emgr
+# Trivy DS-0002. The base image already ships uid 65532 and the data
+# directory above is copied with that ownership, so this costs the benchmark
+# nothing - and it keeps this image matching the production Dockerfile, which
+# is the point of the glibc arm.
+USER 65532:65532
+
+COPY --from=builder --chown=65532:65532 /app/emgr.out /app/emgr
 COPY --from=builder --chown=65532:65532 /data-images /data/images
 
+# Trivy DS-0026 (no HEALTHCHECK) is deliberately not satisfied here, and this
+# is the one image where that is a real argument rather than laziness: a
+# HEALTHCHECK spawns a process inside the container on a fixed interval, and
+# this container exists solely to have its RSS sampled (#144). Adding a
+# periodic process would contaminate the measurement it was built to take.
+# The production Dockerfile does define one.
 ENTRYPOINT ["/app/emgr"]

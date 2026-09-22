@@ -43,6 +43,13 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=${MUSL_LINKER}
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=${MUSL_LINKER}
 ENV RUSTFLAGS="-C target-feature=+crt-static"
 
+# `scratch` has no `mkdir`, and a non-root process cannot create a directory
+# under `/`. The storage path has to be baked in with its ownership already
+# set, so it is created here and copied across below. This is not incidental
+# to the benchmark - it is the same thing #144's production `scratch` move
+# will have to do, discovered because Trivy DS-0002 asked for a non-root user.
+RUN mkdir -p /data-images
+
 RUN cargo build --profile perf --locked --bin emgr --no-default-features --features="local_fs" \
     --target ${MUSL_TARGET} \
     && cp ./target/${MUSL_TARGET}/perf/emgr /app/emgr.out
@@ -94,6 +101,19 @@ ENV ALLOW_UNSIGNED_REQUESTS=true
 WORKDIR /app
 EXPOSE 3000
 
-COPY --from=builder /app/emgr.out /app/emgr
+# Trivy DS-0002. Numeric, necessarily: `scratch` has no /etc/passwd, so a
+# named user cannot resolve - `USER nonroot` would fail at container start.
+# The production image can write `USER nonroot:nonroot` only because
+# distroless ships that entry.
+USER 65532:65532
 
+COPY --from=builder --chown=65532:65532 /app/emgr.out /app/emgr
+COPY --from=builder --chown=65532:65532 /data-images /data/images
+
+# Trivy DS-0026 (no HEALTHCHECK) is deliberately unsatisfied, for two reasons
+# here. This container exists to have its RSS sampled (#144), and a
+# HEALTHCHECK runs a process on an interval inside it, which would contaminate
+# the measurement. And on `scratch` there is no shell and no binary to run one
+# with - it would mean copying a second static binary in, changing the very
+# image under test. Production defines a HEALTHCHECK.
 ENTRYPOINT ["/app/emgr"]
