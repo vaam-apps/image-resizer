@@ -258,7 +258,11 @@ url = "2.5"      # source-URL parsing and scheme validation (#21)
 ipnet = "2.9"    # private/link-local range checks for SSRF filtering (#21)
 
 # For hashing the cache key
-sha2 = "0.10"   # NOT "0": 0.11 changed finalize()'s return type and breaks the cache key
+# NOT "0", and likewise pinned in dependabot.yml: sha2 0.11 changed
+# finalize()'s return type, which changes the cache key this service derives
+# from it - every cached entry would miss, and every signed URL's HMAC would
+# change. That is a deliberate refusal, not staleness.
+sha2 = "0.10"
 
 # For async traits
 async-trait = "0.1" # Required for async methods in traits
@@ -294,7 +298,12 @@ tracing = { version = "0.1", features = ["attributes"] }
 prometheus = { version = "0.14", optional = true }
 dashmap = "6"
 tower_governor = "0.8"
-hmac = "0.13"   # NOT 0.13: it needs digest 0.11, i.e. the sha2 0.11 generation the pin above deliberately refuses
+# NOT 0.13, and this is enforced in .github/dependabot.yml rather than only
+# stated here: hmac 0.13 is built on digest 0.11, i.e. the sha2 0.11
+# generation the pin above deliberately refuses. Dependabot raised exactly
+# this bump (#130), it was merged, and `main` stopped compiling - the comment
+# that forbade it travelled along with the change untouched.
+hmac = "0.12"
 subtle = "2.6"
 base64 = "0.23"
 fast_image_resize = { version = "6.1", features = ["image"] }
