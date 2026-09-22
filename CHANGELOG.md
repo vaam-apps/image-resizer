@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.3.0](https://github.com/vaam-apps/image-resizer/compare/v0.2.3...v0.3.0) (2026-09-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove every C/C++ dependency, and rebuild the WebP encoder ([#142](https://github.com/vaam-apps/image-resizer/issues/142))
+
+### Features
+
+* **avif:** recover EXIF and orientation from AVIF sources ([#149](https://github.com/vaam-apps/image-resizer/issues/149)) ([167d67f](https://github.com/vaam-apps/image-resizer/commit/167d67f4d948e2ae1b19958e471d2dee87c59f55))
+* remove every C/C++ dependency, and rebuild the WebP encoder ([#142](https://github.com/vaam-apps/image-resizer/issues/142)) ([7272e71](https://github.com/vaam-apps/image-resizer/commit/7272e716520fb6295abe9318ed05b7407276f9f9))
+* **webp:** carry the source ICC profile and EXIF into WebP output ([#150](https://github.com/vaam-apps/image-resizer/issues/150)) ([011a95a](https://github.com/vaam-apps/image-resizer/commit/011a95a91370534408f6fe382697b9cf77cefe56))
+
+
+### Bug Fixes
+
+* **deps:** restore hmac 0.12 and declare the sha2/hmac pin to Dependabot ([#152](https://github.com/vaam-apps/image-resizer/issues/152)) ([143681d](https://github.com/vaam-apps/image-resizer/commit/143681d677fd6300a8d88c00347259acc1ac893b))
+
+
+### Performance
+
+* **webp:** bump the vaam-image-webp fork to da8181d ([#153](https://github.com/vaam-apps/image-resizer/issues/153)) ([d22bc14](https://github.com/vaam-apps/image-resizer/commit/d22bc14258a326410678229263de566cc616de50))
+
+
+### Documentation
+
+* **negotiation:** correct the .auto rationale - WebP is kept for alpha, not size ([#147](https://github.com/vaam-apps/image-resizer/issues/147)) ([f12729c](https://github.com/vaam-apps/image-resizer/commit/f12729c046b7777c7e329927d4409571270d73bd))
+
+
+### Continuous Integration
+
+* extend the no-C guard to musl, and link the allocator TODOs to [#144](https://github.com/vaam-apps/image-resizer/issues/144) ([#146](https://github.com/vaam-apps/image-resizer/issues/146)) ([9ab00e6](https://github.com/vaam-apps/image-resizer/commit/9ab00e6aea9041a09d84a212087b36e9104b4fcc))
+
+
+### Chores
+
+* **ci:** bump the vaam-apps/.github workflow pin to pick up the lint fix ([#145](https://github.com/vaam-apps/image-resizer/issues/145)) ([05b98b3](https://github.com/vaam-apps/image-resizer/commit/05b98b3a256d2d88507ab05c871b87da720ee633))
+* **deps:** bump aws-config from 1.10.1 to 1.11.0 ([#126](https://github.com/vaam-apps/image-resizer/issues/126)) ([7bf10a3](https://github.com/vaam-apps/image-resizer/commit/7bf10a3c3375638ec1e8ac93b4c690acd9fc2899))
+* **deps:** bump hmac from 0.12.1 to 0.13.0 ([#130](https://github.com/vaam-apps/image-resizer/issues/130)) ([3c1b5cf](https://github.com/vaam-apps/image-resizer/commit/3c1b5cf54ed94a75413a353254dfbad559727658))
+* **deps:** bump ipnet from 2.12.1 to 2.12.2 ([#129](https://github.com/vaam-apps/image-resizer/issues/129)) ([9933737](https://github.com/vaam-apps/image-resizer/commit/9933737652c4b91e4e770cad492f06f537679564))
+* **deps:** bump rand from 0.8.7 to 0.9.5 ([#132](https://github.com/vaam-apps/image-resizer/issues/132)) ([5ecbf87](https://github.com/vaam-apps/image-resizer/commit/5ecbf87fb0f0719d8577ffaa0d21ffe09a355b93))
+
 ## [0.2.3](https://github.com/vaam-apps/image-resizer/compare/v0.2.2...v0.2.3) (2026-09-21)
 
 
