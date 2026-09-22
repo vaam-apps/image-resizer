@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.1](https://github.com/vaam-apps/image-resizer/compare/v0.3.0...v0.3.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* **bench:** complete the allocator bench that [#170](https://github.com/vaam-apps/image-resizer/issues/170) swept in half-finished ([#171](https://github.com/vaam-apps/image-resizer/issues/171)) ([2818c93](https://github.com/vaam-apps/image-resizer/commit/2818c93da7224fe99a6c8ebf08cd4b0a018680c0))
+* **bench:** refuse to report an asm verdict the tree cannot support ([#170](https://github.com/vaam-apps/image-resizer/issues/170)) ([3d4a493](https://github.com/vaam-apps/image-resizer/commit/3d4a493daab4bbdd907706bce502d4dce589326e))
+
+
+### Tests
+
+* **bench:** decode against a fixed corpus instead of self-encoded fixtures ([#165](https://github.com/vaam-apps/image-resizer/issues/165)) ([12d1f42](https://github.com/vaam-apps/image-resizer/commit/12d1f420d679b26d696606a8f40c76a2bad8d6f7))
+
+
+### Build System
+
+* **deps:** depend on the published vaam-image-webp 0.1.0 ([#169](https://github.com/vaam-apps/image-resizer/issues/169)) ([09500dc](https://github.com/vaam-apps/image-resizer/commit/09500dc447aac2a515345c956607385518cd67df))
+
 ## [0.3.0](https://github.com/vaam-apps/image-resizer/compare/v0.2.3...v0.3.0) (2026-09-22)
 
 
