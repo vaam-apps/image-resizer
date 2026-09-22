@@ -450,7 +450,14 @@ Not measured, and honestly unknown:
   machine available is aarch64 (Apple's assembler also rejects rav1d's own `-march` flags,
   so the asm-on side cannot be built locally either). Still worth confirming on x86_64
   hardware, but no longer a likely catastrophe.
-- The platform allocator versus mimalloc under real concurrent load.
+- **The platform allocator versus mimalloc under real concurrent load** (#144). Note that
+  the criterion benches never measured this and never could: `#[global_allocator]` was
+  declared in `src/main.rs`, the binary, while benches link the library target, which has
+  never had one. Every number in this ADR therefore ran on the `System` allocator both
+  before and after the swap - which is why they are unaffected by it, and equally why the
+  benchmark regression gate cannot catch an allocator change. The variable worth measuring
+  is RSS under sustained concurrency, not throughput. #144 also records why this stops
+  being a footnote if the runtime image moves to `scratch`.
 
 Open work, in rough order of value:
 
@@ -459,7 +466,8 @@ Open work, in rough order of value:
    WebP delivery. This is the highest-value item and needs no codec work.
 2. Reduce WebP encode cost (#136) and apply the loop filter properly (#137). Until then WebP
    earns its place only for clients that accept it but not AVIF.
-3. Confirm rav1d-without-asm on x86_64 (#138).
+3. Confirm rav1d-without-asm on x86_64 (#138), and measure the allocator (#144) - the two
+   genuinely unmeasured risks left by this change.
 4. JPEG decode is 2.4x slower and `jpeg-decoder` is in maintenance mode upstream. The
    faster `zune-jpeg` has no scaled-decode API at all, which is why it was not chosen — but
    a hybrid (zune for full-size decodes, `jpeg-decoder` only when DCT scaling applies) is

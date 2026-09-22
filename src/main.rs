@@ -18,7 +18,27 @@ mod services;
 // default `System` allocator by simple absence of a `#[global_allocator]`
 // override. Deliberately not claiming a throughput result here, in either
 // direction - nobody has measured System vs mimalloc on this workload since
-// the swap. TODO(re-measure): System vs mimalloc throughput.
+// the swap. Tracked in #144, which also records two things that are not
+// obvious from this line:
+//
+//   * The criterion benches cannot see this. A `#[global_allocator]` applies
+//     to the crate graph of the binary that declares it, and this is the
+//     binary; benches are separate crates linking the *library* target
+//     (src/lib.rs), which has never had one. So every benchmark number this
+//     repo has produced ran on `System` both before and after the swap - the
+//     codec numbers in adr/0006 are therefore untainted, and the benchmark
+//     regression gate is structurally incapable of catching an allocator
+//     change. Measuring this needs a load test against the real binary, not
+//     a bench.
+//   * The interesting variable is RSS under sustained concurrency, not
+//     throughput. glibc caps arenas at 8x cores and arenas do not share
+//     freed memory, so fragmentation shows up as an OOMKill rather than as a
+//     slow request.
+//
+// It also stops being a footnote if the base image ever moves to `scratch`:
+// that forces a static binary, which forces musl, whose allocator is the
+// weak case for this workload - and whose usual remedy is mimalloc or
+// jemalloc, both C. See #144.
 
 /// Default graceful-shutdown drain deadline (#42): must be comfortably
 /// shorter than a typical orchestrator termination grace period - 30s is
