@@ -1,0 +1,72 @@
+name: AVIF asm bench (#138)
+
+# Manual only, on purpose - this exists to answer a one-off question (what
+# does building rav1d WITH assembly cost on x86_64, versus this service's
+# actual asm-free fork), not to gate every push/PR. It also needs `nasm`
+# installed, which the whole point of #134/#67/#68's C-dependency removal
+# was to NOT require anywhere in this repo's normal build/CI/image path -
+# see ci.yml's `no-native-deps` job. Keeping this workflow_dispatch-only
+# means that installation stays confined to the one job that exists
+# specifically to measure what it buys, never leaking into a job that runs
+# on every push or PR.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: rav1d asm vs no-asm decode bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # zizmor[artipacked]: checkout persists the token in
+          # .git/config by default. No job in this workflow pushes
+          # with git, so it is pure exposure.
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: avif-asm-bench
+          # `tools/avif-asm-bench/` and its two sub-crates are each their
+          # own detached `[workspace]` (see that directory's own
+          # `Cargo.toml` comments), so their `target/` dirs and lockfiles
+          # sit outside the main package's workspace root that
+          # rust-cache would otherwise assume.
+          workspaces: |
+            tools/avif-asm-bench
+            tools/avif-asm-bench/decoder-asm
+            tools/avif-asm-bench/decoder-noasm
+
+      # The whole reason this job exists (see the workflow's own top
+      # comment): rav1d's `asm` feature build script assembles `.asm`
+      # files with NASM on x86_64. Nothing else in this repo's build or
+      # image needs this - see ci.yml's `no-native-deps` job, which
+      # asserts the opposite for the product build.
+      - name: Install nasm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm
+
+      - name: Run the asm vs no-asm decode comparison
+        run: |
+          cargo run --release \
+            --manifest-path tools/avif-asm-bench/Cargo.toml \
+            -- . --markdown-out bench-report.md
+
+      - name: Write results to the job summary
+        if: always()
+        run: |
+          if [ -f bench-report.md ]; then
+            cat bench-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "avif-asm-bench did not produce bench-report.md (see the run's own logs above)." >> "$GITHUB_STEP_SUMMARY"
+          fi

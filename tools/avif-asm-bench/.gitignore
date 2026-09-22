@@ -1,0 +1,6 @@
+# Unlike the repo root's `.gitignore` (`/target`, anchored to the repo
+# root), this crate and its two sub-crates (`decoder-asm/`,
+# `decoder-noasm/`) are each their own detached `[workspace]` (see this
+# directory's `Cargo.toml`), so each has its own `target/` directory below
+# this one. Unanchored here so it matches all three.
+target/

@@ -1,0 +1,72 @@
+# Issue #138: what does building rav1d WITH assembly cost on x86_64, versus
+# this service's actual asm-free fork? This is the orchestrator crate: it
+# builds the corpus (real photos -> AVIF at a couple of qualities, using the
+# exact `image`/`ravif` versions and call pattern `src/services/image/
+# avif_codec.rs` uses in production) and drives the timing comparison.
+#
+# Deliberately NOT a member of the main package's workspace (that package
+# has no `[workspace]` table of its own, so simply living under its
+# directory tree would otherwise fold this crate into the same build unit -
+# the empty `[workspace]` table below detaches it into its own workspace
+# root). That separation is load-bearing, not tidiness: `ci.yml`'s
+# `no-native-deps` job runs `cargo tree --all-features -e normal --target
+# <target> -i rav1d` from the repo root and fails the build if an
+# asm-enabled rav1d is reachable from the main package's graph. Verified
+# after adding this whole `tools/avif-asm-bench/` tree:
+#   cargo tree --all-features -e normal --target x86_64-unknown-linux-gnu -i rav1d
+# run from the repo root still shows only the asm-free fork, unchanged from
+# `main`.
+#
+# # Why this is three crates, not the one binary the issue sketched
+#
+# The original plan was one binary linking both `avif-decode` (upstream) and
+# `vaam-avif-decode` (this org's fork) at once via Cargo's dependency-rename
+# (`package = "..."`), since both crates set `[lib] name = "avif_decode"`.
+# That does NOT produce a valid comparison, and this was caught empirically,
+# not assumed: both packages request the SAME `rav1d` (name, version 1.1.0,
+# source - crates.io) as a "normal", non-dev, non-build dependency for the
+# same target. Cargo's feature unification (https://doc.rust-lang.org/cargo/
+# reference/features.html#feature-unification) builds exactly ONE physical
+# copy of a shared dependency per resolved (name, version, source, target),
+# using the UNION of every dependent's requested features - it does not
+# build one copy per requester. Confirmed via `cargo tree --target
+# x86_64-unknown-linux-gnu -e features -i rav1d` against a throwaway
+# single-binary version of this crate: exactly one `rav1d v1.1.0` node
+# appeared, and its feature list showed `asm` (pulled in by upstream
+# `avif-decode`'s x86_64 default) AND `bitdepth_8`/`bitdepth_16` (pulled in
+# by the fork) as siblings under that one node - i.e. the "no-asm" side
+# would have silently linked against an asm-enabled rav1d, making the whole
+# comparison read close to 1.0x for the wrong reason (both sides equally
+# fast, not because asm doesn't matter, but because both sides HAD it).
+#
+# The fix: `decoder-asm/` and `decoder-noasm/` are each their own detached
+# `[workspace]`, each with exactly ONE dependent of `rav1d` in their entire
+# graph (upstream `avif-decode` in one, the fork in the other). With no
+# sibling to unify features with, each gets a true, unpolluted build -
+# re-verified per-crate the same way (see each crate's own `Cargo.toml`):
+# `decoder-asm`'s x86_64 tree shows `asm` enabled; `decoder-noasm`'s does
+# not, on ANY target. This orchestrator builds both as release binaries and
+# drives them as subprocesses (`src/main.rs`), alternating which one runs
+# each round so thermal drift cannot favour whichever goes first, and
+# compares their reported pixel hashes before trusting any timing.
+[workspace]
+
+[package]
+name = "avif-asm-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "avif-asm-bench"
+path = "src/main.rs"
+
+[dependencies]
+# Same crates the main package uses for the encode direction (see that
+# `Cargo.toml`'s own `ravif`/`image` dependency comments) - this crate never
+# links `avif-decode`/`vaam-avif-decode` itself (see above), only
+# `decoder-asm`/`decoder-noasm` do, each in isolation.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+ravif = { version = "0.13", default-features = false, features = ["threading"] }
+rgb = "0.8"
+imgref = "1.12"

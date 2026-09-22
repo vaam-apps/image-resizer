@@ -1,0 +1,30 @@
+# The other half of the issue #138 comparison harness - see
+# `../decoder-asm/Cargo.toml` and `../README.md` for why this is a separate
+# crate/workspace rather than linked into the same binary as `decoder-asm`.
+#
+# This crate's ONLY dependency is this org's fork, at the exact rev pinned
+# in the main package's `Cargo.toml`. Its target tables set
+# `default-features = false` for BOTH `cfg(x86/x86_64)` and
+# `cfg(not(x86/x86_64))`, so rav1d's `asm` feature is off on every target -
+# and, being the only rav1d-dependent in this isolated workspace, there is
+# nothing else to union features with, so this is a true, unpolluted asm-off
+# build.
+[workspace]
+
+[package]
+name = "decoder-noasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "decoder-noasm"
+path = "src/main.rs"
+
+[dependencies]
+# Renamed to the same `avif-decode` local name `decoder-asm` uses, so the
+# two binaries' `src/main.rs` can (and do) stay byte-for-byte identical
+# except for this one dependency line - both packages set `[lib] name =
+# "avif_decode"` (see each crate's own Cargo.toml), so the `use` paths and
+# API calls are literally the same code either way.
+avif-decode = { package = "vaam-avif-decode", git = "https://github.com/vaam-apps/vaam-avif-decode", rev = "b938566", default-features = false }
