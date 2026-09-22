@@ -35,6 +35,8 @@ use anyhow::{Context, Result};
 use image::DynamicImage;
 use image::metadata::Orientation;
 
+use crate::services::image::avif_meta;
+
 /// AVIF-specific slice of the decode tuple every other decode path in
 /// `handler.rs` returns as `DecodedImage` (`(DynamicImage, Orientation,
 /// Option<Vec<u8>>, Option<Vec<u8>>)`), kept as an inline tuple here rather
@@ -181,32 +183,30 @@ fn decode_inner(image_bytes: &[u8], max_src_resolution_mp: u64) -> Result<AvifDe
 
     let dynamic_image = avif_image_to_dynamic(decoded)?;
 
-    // Orientation (`irot`/`imir`) and both metadata kinds (ICC `colr`, EXIF
-    // `Exif` item) are unrecoverable on this path - not a choice made in
-    // this module, a hard capability gap in `avif-parse` 2.1.0 itself.
-    // Its `AvifData` (`avif-parse-2.1.0/src/lib.rs`) carries only
-    // `primary_item`, `alpha_item`, `premultiplied_alpha`,
-    // `content_light_level` and `mastering_display` - no ICC/EXIF/transform
-    // fields exist to populate. Its internal `ItemProperty` enum
-    // (`avif-parse-2.1.0/src/lib.rs:1091`) has variants for exactly
-    // `Channels`/`AuxiliaryType`/`ContentLightLevel`/
-    // `MasteringDisplayColourVolume`, plus a catch-all `Unsupported` that
-    // silently swallows every other item property box - including `colr`
-    // (ICC), `irot`, and `imir`. The `Exif`-typed item itself (a separate
-    // `infe`/`iloc` item referenced via an `'cdsc'` item reference, not a
-    // property at all) is never looked at either. This is a real,
-    // reportable behaviour change from the old libavif path (which read
-    // `image->icc`/`image->exif` and inverted `image->transformFlags`/
-    // `irot`/`imir` via `avif_orientation`, both removed with this change):
-    // a decoded AVIF's orientation is always treated as already-correct
-    // (`Orientation::NoTransforms`, the same "malformed/absent metadata
-    // isn't worth failing the whole request over" default every other
-    // format in `handler.rs` falls back to), and its ICC/EXIF are always
-    // `None`, even when the source file actually embeds them. Note this is
-    // asymmetric with `encode` (below), whose `ravif::Encoder::with_exif`
-    // *does* write a real EXIF item - AVIFs this service produces itself
-    // and later re-decodes will still lose that EXIF on the way back in.
-    Ok((dynamic_image, Orientation::NoTransforms, None, None))
+    // `avif-parse` 2.1.0 recovers no metadata at all: its `AvifData`
+    // carries only `primary_item`, `alpha_item`, `premultiplied_alpha`,
+    // `content_light_level` and `mastering_display`, and its internal
+    // `ItemProperty` enum has no `colr`/`irot`/`imir` variants - every
+    // other property box falls into a catch-all that discards the bytes.
+    // The `Exif` item is never looked at either, because it is a separate
+    // `infe`/`iloc` item rather than a property.
+    //
+    // So orientation and EXIF are read here instead, straight out of the
+    // container by `avif_meta::parse` (#140). That function is infallible
+    // by construction: anything malformed, truncated or over its size caps
+    // degrades to `NoTransforms`/`None` rather than failing a request, which
+    // is the same "malformed metadata isn't worth a 500" posture every other
+    // format in `handler.rs` takes.
+    //
+    // ICC is deliberately still `None`, and is not an oversight. Nothing in
+    // this build can write a `colr` box back out - `ravif` 0.13 and the
+    // `avif-serialize` 0.8 muxer beneath it contain no ICC code whatsoever
+    // - so a recovered profile would have nowhere to go on re-encode. It is
+    // a whole-stack gap, not a decode gap, and parsing it here would only
+    // create the illusion of support.
+    let metadata = avif_meta::parse(image_bytes);
+
+    Ok((dynamic_image, metadata.orientation, None, metadata.exif))
 }
 
 /// Converts `avif-decode`'s already YUV->RGB-converted, bit-depth-normalised
@@ -532,9 +532,8 @@ mod tests {
     /// comment on why). This pins both halves of that asymmetry: encode
     /// writes it, decode cannot read it back.
     #[test]
-    fn encode_writes_exif_but_decode_cannot_read_it_back() {
+    fn encode_and_decode_round_trip_exif() {
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(4, 4));
-        // Minimal well-formed EXIF TIFF header (no IFD entries).
         let exif: &[u8] = b"II*\0\x08\0\0\0\0\0\0\0";
         let avif_bytes = encode(&img, 70, 8, Some(exif)).expect("AVIF encode should succeed");
 
@@ -547,8 +546,25 @@ mod tests {
         let (_decoded, _orientation, _icc, exif_out) =
             decode(&avif_bytes, 50).expect("AVIF decode should succeed");
         assert_eq!(
-            exif_out, None,
-            "avif-parse has no EXIF-read support - see decode_inner's doc comment"
+            exif_out.as_deref(),
+            Some(exif),
+            "EXIF must survive the round trip (#140) - `avif_meta::parse` reads the \
+             `Exif` item straight out of the container, since `avif-parse` does not"
         );
+    }
+
+    /// ICC is still dropped, and that is a whole-stack limit rather than a
+    /// decode gap: `ravif` 0.13 and `avif-serialize` 0.8 contain no ICC code
+    /// at all, so there is no way to write a `colr` box back out and nowhere
+    /// for a recovered profile to go. Pinned so that "AVIF metadata works
+    /// now" (#140) is not mistaken for ICC working too.
+    #[test]
+    fn decode_still_returns_no_icc_profile() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(4, 4));
+        let avif_bytes = encode(&img, 70, 8, None).expect("AVIF encode should succeed");
+
+        let (_decoded, _orientation, icc, _exif) =
+            decode(&avif_bytes, 50).expect("AVIF decode should succeed");
+        assert_eq!(icc, None, "no crate in this build can emit or carry ICC");
     }
 }
