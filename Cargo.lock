@@ -4269,8 +4269,9 @@ dependencies = [
 
 [[package]]
 name = "vaam-image-webp"
-version = "0.3.0-vaam.1"
-source = "git+https://github.com/vaam-apps/vaam-image-webp?rev=817951e#817951e0aae34ad1ed8b10bbe9952af6b5397dfa"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f8674acd014f07b7d26cf5cdca65396df4048aa049cef5eb515847216ca7bf4"
 dependencies = [
  "byteorder-lite",
  "quick-error",
