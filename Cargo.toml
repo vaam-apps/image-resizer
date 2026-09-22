@@ -275,7 +275,7 @@ rand = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-opentelemetry = { version = "0.32", optional = true }
+opentelemetry = { version = "0.33", optional = true }
 opentelemetry-otlp = { version = "0.33", optional = true, features = ["tokio", "metrics", "trace", "grpc-tonic", "gzip-tonic"] }
 opentelemetry_sdk = { version = "0.32", optional = true, features = ["tokio", "metrics", "rt-tokio", "trace"] }
 opentelemetry-prometheus = { version = "0.32", optional = true }
