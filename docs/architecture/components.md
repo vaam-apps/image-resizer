@@ -94,9 +94,11 @@ Implements the imgproxy-compatible signed-URL grammar
 
 ### `src/modules/negotiation.rs`
 
-`resolve(format, accept)` — resolves `ImageFormat::Auto` against the request's `Accept` header,
-preferring AVIF, then WebP, falling back to JPEG, weighted by each entry's `q` parameter. Any
-non-`Auto` format passes through unchanged with `negotiated = false`.
+`resolve(format, accept)` — resolves `ImageFormat::Auto` against the request's `Accept` header:
+AVIF first (17-32% smaller than JPEG at matched quality, per `adr/0006`), then WebP — not because
+it's smaller (the two are roughly on par now) but because it's the only alpha-capable option for a
+client that accepts WebP but not AVIF — falling back to JPEG, weighted by each entry's `q`
+parameter. Any non-`Auto` format passes through unchanged with `negotiated = false`.
 
 ### `src/modules/metrics_auth/`
 

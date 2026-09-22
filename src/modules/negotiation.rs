@@ -25,15 +25,41 @@ use crate::models::params::ImageFormat;
 /// `negotiated = false` - an explicit `.jpg`/`.png`/`.webp`/`.avif`/`.gif`
 /// request's output is fully determined by the URL, never by `Accept`.
 ///
-/// When `format` is `Auto`, the concrete format is chosen by preferring the
-/// smallest/most modern codec the client actually advertises support for,
-/// in order: [`ImageFormat::Avif`], then [`ImageFormat::Webp`], falling
-/// back to [`ImageFormat::Jpg`] when neither is accepted (including when
-/// `accept` is `None`, or fails to parse as a comma-separated `Accept`
-/// list). Preference is weighted by each entry's `q` parameter (default
-/// `1.0` when absent) - a client that explicitly deprioritises AVIF below
-/// WebP (`image/avif;q=0.3, image/webp;q=0.8`) gets WebP, not AVIF-by-
-/// listed-order.
+/// When `format` is `Auto`, the concrete format is chosen from those the
+/// client actually advertises support for, in order: [`ImageFormat::Avif`],
+/// then [`ImageFormat::Webp`], falling back to [`ImageFormat::Jpg`] when
+/// neither is accepted (including when `accept` is `None`, or fails to
+/// parse as a comma-separated `Accept` list). Preference is weighted by
+/// each entry's `q` parameter (default `1.0` when absent) - a client that
+/// explicitly deprioritises AVIF below WebP (`image/avif;q=0.3,
+/// image/webp;q=0.8`) gets WebP, not AVIF-by-listed-order.
+///
+/// # Why this order (#135)
+///
+/// The two steps are preferred for different reasons, and only the first
+/// one is about size. Numbers are from `adr/0006-pure-rust-codecs.md`,
+/// measured across 24 photographs at three matched-DSSIM targets, relative
+/// to the same build's JPEG.
+///
+/// **AVIF first, on size.** 0.685x / 0.784x / 0.828x - 17-32% smaller than
+/// JPEG, and ahead on SSIMULACRA2 as well as on the DSSIM target it was
+/// matched against, so the win is not an artifact of the metric.
+///
+/// **WebP over JPEG, on alpha - not on size.** This used to be a size
+/// preference and no longer is: WebP now measures 0.964x / 1.067x / 1.129x,
+/// i.e. 3.6% smaller at the loosest target and *larger* above it, and it
+/// lands ~2.2 SSIMULACRA2 points below AVIF at DSSIM-matched size. Treat
+/// the two as equivalent on bytes. What WebP still has, and JPEG
+/// structurally cannot, is an alpha channel: a JPEG output flattens onto a
+/// background (`ImageService::flatten_onto_background`,
+/// `src/services/image/handler.rs`). A client that accepts WebP but not
+/// AVIF has no other alpha-capable option, which is the whole reason this
+/// arm exists.
+///
+/// The cost that is *not* accounted for here is encode time - WebP encodes
+/// in ~112-128 ms against JPEG's ~2.8-3.0 ms in this build. That is paid
+/// once per image and amortised by the cache, so it does not belong in a
+/// per-request negotiation decision; reducing it is #136.
 pub fn resolve(format: ImageFormat, accept: Option<&str>) -> (ImageFormat, bool) {
     if format != ImageFormat::Auto {
         return (format, false);
@@ -45,7 +71,8 @@ pub fn resolve(format: ImageFormat, accept: Option<&str>) -> (ImageFormat, bool)
     let webp_q = best_q(&entries, "image/webp").unwrap_or(0.0);
 
     // Ties (including both at the default `1.0`, e.g. a bare `image/*`
-    // wildcard) go to AVIF - the smaller/more-modern codec of the two.
+    // wildcard) go to AVIF - 17-32% smaller than JPEG where WebP is now
+    // roughly at parity with it. See this function's own doc comment.
     let resolved = if avif_q > 0.0 && avif_q >= webp_q {
         ImageFormat::Avif
     } else if webp_q > 0.0 {
@@ -140,6 +167,14 @@ mod tests {
     }
 
     /// AVIF absent, WebP present -> WebP, still ahead of the JPEG fallback.
+    ///
+    /// Deliberate, and load-bearing (#135): WebP is no longer smaller than
+    /// JPEG - it measures 0.964x / 1.067x / 1.129x against it - so a reader
+    /// who only checks the size table will conclude this arm is obsolete
+    /// and flip it. It is kept for **alpha**. JPEG has no alpha channel and
+    /// is flattened onto a background, and a client on this branch (accepts
+    /// WebP, not AVIF) has no other alpha-capable option. Do not reorder
+    /// this without an answer for transparent sources.
     #[test]
     fn auto_prefers_webp_when_avif_not_accepted() {
         assert_eq!(
