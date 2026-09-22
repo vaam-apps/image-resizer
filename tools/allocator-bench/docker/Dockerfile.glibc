@@ -1,0 +1,49 @@
+# glibc variant for #144's allocator measurement: the exact build the
+# service ships today. Same builder image, same source tree, same
+# `--no-default-features --features local_fs`, same `perf` profile as
+# Dockerfile:37/95-105 in the repo root - only the two lines that select the
+# runtime base and copy the binary differ from that production recipe. This
+# is deliberately NOT built via the root Dockerfile's multi-stage/cache-mount
+# machinery: that Dockerfile builds four feature combinations concurrently
+# and this bench only ever needs one, so a minimal single-purpose file is
+# easier to reason about and keeps this tool self-contained under
+# tools/allocator-bench/.
+#
+# Pinned to the identical digests the root Dockerfile uses, so "glibc" here
+# really is "what ships today" and not a coincidentally-similar build.
+FROM rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY benches ./benches
+
+RUN cargo build --profile perf --locked --bin emgr --no-default-features --features="local_fs" \
+    && cp ./target/perf/emgr /app/emgr.out
+
+# `local_fs_handler.rs:166` does its own `create_dir_all` on first write, but
+# distroless's `nonroot` user (uid/gid 65532, baked into the pinned digest
+# below - see the root Dockerfile's own comment on this) has no write
+# access to create a fresh directory under `/`. Pre-create and `--chown` the
+# storage root here so the *first request* doesn't fail with "Failed to
+# create a local storage directory" - confirmed by hand: without this, the
+# glibc container returns 502 on every resize request, never reaching the
+# decode/resize/encode path this bench exists to measure the allocator
+# behavior of.
+RUN mkdir -p /data-images
+
+FROM gcr.io/distroless/cc-debian12@sha256:adcd20c7b4c988b73cbfbddb26d2eee574571e6d7c9ffea29b3821e0690efb77 AS runtime
+
+ENV PORT=3000
+ENV HOST=0.0.0.0
+ENV LOCAL_FS_STORAGE_PATH=/data/images
+ENV ALLOW_UNSIGNED_REQUESTS=true
+
+WORKDIR /app
+EXPOSE 3000
+
+COPY --from=builder /app/emgr.out /app/emgr
+COPY --from=builder --chown=65532:65532 /data-images /data/images
+
+ENTRYPOINT ["/app/emgr"]

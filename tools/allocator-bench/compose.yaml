@@ -1,0 +1,45 @@
+# Convenience compose file for manually poking at either variant (e.g.
+# `docker compose --profile glibc up --build` to leave one running and hit
+# it by hand). It is NOT what scripts/run-bench.sh uses to produce the
+# measured numbers in README.md - that script drives everything with plain
+# `docker build`/`docker run` so it has full, explicit control over
+# per-container --cpus/--memory limits, strictly sequential (never
+# concurrent) variant execution, and the --pid=container: RSS-sampling
+# sidecar trick, none of which map cleanly onto `docker compose up`.
+#
+# Bring up just the source server + one variant:
+#   docker compose -f compose.yaml --profile glibc up --build source glibc
+#   docker compose -f compose.yaml --profile musl  up --build source musl
+services:
+  source:
+    build:
+      context: ../..
+      dockerfile: tools/allocator-bench/docker/Dockerfile.source-server
+    ports:
+      - "18080:8080"
+
+  glibc:
+    profiles: ["glibc"]
+    build:
+      context: ../..
+      dockerfile: tools/allocator-bench/docker/Dockerfile.glibc
+    environment:
+      ALLOWED_SOURCES: "http://source:8080/"
+      ALLOW_UNSIGNED_REQUESTS: "true"
+    ports:
+      - "13000:3000"
+    depends_on:
+      - source
+
+  musl:
+    profiles: ["musl"]
+    build:
+      context: ../..
+      dockerfile: tools/allocator-bench/docker/Dockerfile.musl
+    environment:
+      ALLOWED_SOURCES: "http://source:8080/"
+      ALLOW_UNSIGNED_REQUESTS: "true"
+    ports:
+      - "13001:3000"
+    depends_on:
+      - source

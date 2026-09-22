@@ -1,0 +1,17 @@
+# Tiny static file server for #144's allocator measurement, serving
+# benches/fixtures/decode/*.jpg over PLAIN HTTP.
+#
+# Plain HTTP is deliberate, not a shortcut: TLS and the CA-trust-store
+# question are a SEPARATE #144 scope item (bundling ca-certificates.crt /
+# webpki-roots for a future `scratch` base), and pulling them into this
+# measurement would conflate two different unknowns. This bench only needs
+# the service under test to download real source bytes it will actually
+# decode - the transport those bytes travel over is irrelevant to the RSS
+# question being measured here.
+FROM python:3.12-alpine
+
+WORKDIR /srv/fixtures
+COPY benches/fixtures/decode/*.jpg /srv/fixtures/
+
+EXPOSE 8080
+CMD ["python3", "-m", "http.server", "8080", "--bind", "0.0.0.0"]
