@@ -6,3 +6,21 @@ updates:
     interval: daily
     time: "08:00"
   open-pull-requests-limit: 10
+  ignore:
+  # `sha2` and `hmac` are one unit: hmac 0.13 is built on digest 0.11, which
+  # is the sha2 0.11 generation. sha2 0.11 changes `finalize()`'s return type
+  # and with it the cache key this service derives from it, so every cached
+  # entry would miss and every signed URL's HMAC would change.
+  #
+  # Both are pinned in Cargo.toml with a comment saying so. That was not
+  # enough: Dependabot raised the hmac 0.13 bump anyway (#130), it was merged,
+  # and `main` stopped compiling with five trait errors in
+  # `src/modules/signing/verify.rs`. A comment is not a guard, so the refusal
+  # is declared where the bot reads it.
+  #
+  # Moving to that generation is a real decision with a cache-invalidation
+  # plan attached, not a routine bump. Remove these entries when making it.
+  - dependency-name: sha2
+    update-types: [version-update:semver-minor, version-update:semver-major]
+  - dependency-name: hmac
+    update-types: [version-update:semver-minor, version-update:semver-major]

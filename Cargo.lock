@@ -1400,7 +1400,7 @@ dependencies = [
  "envconfig",
  "fast_image_resize",
  "futures",
- "hmac 0.13.0",
+ "hmac 0.12.1",
  "image",
  "imgref",
  "ipnet",
@@ -4234,7 +4234,7 @@ dependencies = [
 [[package]]
 name = "vaam-image-webp"
 version = "0.3.0-vaam.1"
-source = "git+https://github.com/vaam-apps/vaam-image-webp?rev=7feed60#7feed6088a300a6b0391e810657208e46fe3f7f6"
+source = "git+https://github.com/vaam-apps/vaam-image-webp?rev=da8181d#da8181d85388431a077dbc59434c903b37b17014"
 dependencies = [
  "byteorder-lite",
  "quick-error",
