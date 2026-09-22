@@ -64,7 +64,7 @@ axum-tracing-opentelemetry = { version = "0.39" }
 # dependency. Listing them individually rather than using the umbrella
 # feature is also what stops a future tower-http from silently
 # reintroducing zstd under `compression-full`.
-tower-http = { version = "0.6", features = [
+tower-http = { version = "0.7", features = [
     "compression-gzip",
     "compression-br",
     "compression-deflate",
