@@ -1004,18 +1004,25 @@ impl ImageService {
         // #33: `icc_profile`, if the source carried one, is forwarded to
         // the PNG/JPEG encoders - both support embedding it
         // (`image-0.25.10/src/codecs/{png,jpeg/encoder}.rs`). WebP and AVIF
-        // are the formats this can't cover today, for two different
-        // reasons: the `webp` crate (0.3.1, this service's only route to
-        // *lossy* WebP encoding - see the doc comment above) has no
-        // ICC-profile API at all, while `avif_codec::encode` (libavif/AOM,
-        // see that function's own doc comment) simply doesn't thread one
-        // through, even though libavif exposes `avifImageSetProfileICC` for
-        // exactly this - a real gap, but a "not wired up" one for AVIF, not
-        // a hard capability limit the way it is for WebP. Fixing WebP would
-        // mean switching encoders or patching raw ICC chunks into the
-        // container format by hand; fixing AVIF would mean wiring up the
-        // libavif call that already exists. Neither is a small addition, so
-        // both are left as follow-up rather than half-done here.
+        // still do not carry it, for two *different* reasons - and the
+        // earlier revision of this comment had them exactly backwards,
+        // because it described the pre-#134 stack (the `webp` crate 0.3.1
+        // and libavif/AOM), neither of which is in this build any more:
+        //
+        // - **WebP is not a capability gap, it is unwired** (#148).
+        //   `image_webp::WebPEncoder` - the encoder `encode_webp` already
+        //   constructs a few hundred lines below - exposes
+        //   `set_icc_profile`, `set_exif_metadata` and `set_xmp_metadata`.
+        //   `encode_webp` calls only `set_params`, so ICC *and* EXIF are
+        //   dropped on every WebP response even though the encoder in hand
+        //   accepts both. That is a small fix, tracked separately.
+        // - **AVIF is the hard limit now.** `ravif` 0.13 and the
+        //   `avif-serialize` 0.8 muxer underneath it contain no ICC code at
+        //   all - not a missing call, no `colr`-writing capability exists to
+        //   call. (The old comment pointed at `avifImageSetProfileICC`; that
+        //   was libavif's, and libavif is gone.) EXIF is the exception and
+        //   does work: `ravif::Encoder::with_exif` writes a real `Exif`
+        //   item, and `avif_codec::encode` already uses it.
         //
         // #5: `exif_metadata` (resolved above, already `None` if
         // `params.strip_metadata` or unavailable) follows a *different*
