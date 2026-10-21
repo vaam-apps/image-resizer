@@ -105,7 +105,7 @@ until then, everything below is "Unreleased" in that format's sense.
   (JPEG decode+encode), the `webp` crate/libwebp (WebP), `libavif`/AOM/dav1d
   (AVIF), and `mimalloc` were replaced by pure-Rust equivalents
   (`jpeg-decoder`/`jpeg-encoder`, `vaam-image-webp`, `ravif`/`avif-decode`,
-  the platform allocator) — see [Performance notes](../../PERFORMANCE_OPTIMIZATIONS.md)
+  the platform allocator) — see [Performance notes](https://github.com/vaam-apps/image-resizer/blob/main/PERFORMANCE_OPTIMIZATIONS.md)
   ([#134](https://github.com/vaam-store/image-resizer/issues/120)). The
   figures recorded above for `#63`/`#67`/`#76` describe the mozjpeg-era
   implementation and have not been re-measured against the new codecs.

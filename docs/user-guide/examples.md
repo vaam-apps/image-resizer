@@ -11,20 +11,22 @@ placeholder key/salt as the API reference's worked example:
 never use these for anything real. Every example resizes
 `https://images.example.com/photo.jpg` unless noted otherwise.
 
-!!! note "The resize endpoint redirects, it doesn't stream bytes back"
-    `GET /{signature}/{options}/{source}.{extension}` responds
-    `301 Moved Permanently` with a `Location` header pointing at the
-    resized image, rather than returning the image bytes directly.
-    Browsers, `fetch()`, and `curl -L` all follow that redirect
-    transparently, so most of the examples below work unmodified — just be
-    aware a plain `curl` (no `-L`) will save the (empty) redirect
-    response, not an image.
+::: info The resize endpoint redirects, it doesn't stream bytes back
+`GET /{signature}/{options}/{source}.{extension}` responds
+`301 Moved Permanently` with a `Location` header pointing at the
+resized image, rather than returning the image bytes directly.
+Browsers, `fetch()`, and `curl -L` all follow that redirect
+transparently, so most of the examples below work unmodified — just be
+aware a plain `curl` (no `-L`) will save the (empty) redirect
+response, not an image.
+:::
 
-!!! note "Every request needs a real signature"
-    A request with a missing, wrong, or (unless `ALLOW_UNSIGNED_REQUESTS=true`
-    is set) `unsigned` signature gets `403 Forbidden`, never processed. See
-    [Signing and fail-closed startup](api-reference.md#signature) in the
-    API reference for the exact HMAC scheme.
+::: info Every request needs a real signature
+A request with a missing, wrong, or (unless `ALLOW_UNSIGNED_REQUESTS=true`
+is set) `unsigned` signature gets `403 Forbidden`, never processed. See
+[Signing and fail-closed startup](api-reference.md#signature) in the
+API reference for the exact HMAC scheme.
+:::
 
 ## Computing a signature
 

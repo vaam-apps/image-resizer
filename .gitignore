@@ -24,3 +24,7 @@ node_modules/
 # build logs, response-byte samples) - reproducible from
 # tools/allocator-bench/scripts/run-bench.sh, not source.
 tools/allocator-bench/results/
+
+# The VitePress docs site's build output and cache (docs/.vitepress).
+docs/.vitepress/dist
+docs/.vitepress/cache

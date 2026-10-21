@@ -1,6 +1,6 @@
 # Performance Configuration
 
-Every performance-relevant tunable is set through environment variables, no code changes required. This page is the knobs; for what the mechanisms behind them actually do, see [`PERFORMANCE_OPTIMIZATIONS.md`](../../PERFORMANCE_OPTIMIZATIONS.md); for measured numbers (criterion micro-benchmarks and the end-to-end comparison against imgproxy), see [`.bench-baseline/BASELINE.md`](../../.bench-baseline/BASELINE.md).
+Every performance-relevant tunable is set through environment variables, no code changes required. This page is the knobs; for what the mechanisms behind them actually do, see [`PERFORMANCE_OPTIMIZATIONS.md`](https://github.com/vaam-apps/image-resizer/blob/main/PERFORMANCE_OPTIMIZATIONS.md); for measured numbers (criterion micro-benchmarks and the end-to-end comparison against imgproxy), see [`.bench-baseline/BASELINE.md`](https://github.com/vaam-apps/image-resizer/blob/main/.bench-baseline/BASELINE.md).
 
 ## Environment Variables
 
@@ -9,16 +9,16 @@ Every performance-relevant tunable is set through environment variables, no code
 All read by `envconfig` in `src/modules/env/env.rs` and converted into a
 `PerformanceConfig` (`src/config/performance.rs`).
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MAX_CONCURRENT_DOWNLOADS` | `20` | Maximum number of concurrent image downloads (`download_semaphore`) |
+| Variable                    | Default   | Description                                                                           |
+| --------------------------- | --------- | ------------------------------------------------------------------------------------- |
+| `MAX_CONCURRENT_DOWNLOADS`  | `20`      | Maximum number of concurrent image downloads (`download_semaphore`)                   |
 | `MAX_CONCURRENT_PROCESSING` | CPU count | Maximum number of concurrent decode/resize/encode tasks (`processing_semaphore`, #30) |
-| `HTTP_TIMEOUT_SECS` | `30` | HTTP client timeout in seconds |
-| `MAX_IMAGE_SIZE_MB` | `50` | Maximum source image size in megabytes, enforced per downloaded chunk (#22) |
-| `CPU_THREAD_POOL_SIZE` | CPU count | Advisory only - see the note below |
-| `ENABLE_HTTP2` | `true` | Enable HTTP/2 for downloads |
-| `CONNECTION_POOL_SIZE` | `50` | Connection pool size per host |
-| `KEEP_ALIVE_TIMEOUT_SECS` | `60` | Keep-alive timeout for connections in seconds |
+| `HTTP_TIMEOUT_SECS`         | `30`      | HTTP client timeout in seconds                                                        |
+| `MAX_IMAGE_SIZE_MB`         | `50`      | Maximum source image size in megabytes, enforced per downloaded chunk (#22)           |
+| `CPU_THREAD_POOL_SIZE`      | CPU count | Advisory only - see the note below                                                    |
+| `ENABLE_HTTP2`              | `true`    | Enable HTTP/2 for downloads                                                           |
+| `CONNECTION_POOL_SIZE`      | `50`      | Connection pool size per host                                                         |
+| `KEEP_ALIVE_TIMEOUT_SECS`   | `60`      | Keep-alive timeout for connections in seconds                                         |
 
 > **`ENABLE_HTTP2` (#83, fixed):** `PerformanceConfig::default()` and every
 > profile except `memory_efficient` (which deliberately opts out - HTTP/1.1
@@ -47,12 +47,12 @@ directly from the process environment (not via `envconfig`/`EnvConfig`),
 so `docs-env-drift` CI's `EnvConfig`-vs-`.env.example` check does not cover
 them - they are documented here instead.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MAX_CONCURRENT_REQUESTS` | `512` | Total requests handled concurrently across all routes. Beyond this, a request is shed with `503` immediately rather than queued. |
-| `REQUEST_TIMEOUT_SECS` | `30` | Hard ceiling on end-to-end request time; a request still running past this is shed with `503`. |
-| `RATE_LIMIT_BURST` | `20` | Per-IP token-bucket burst size before rate limiting engages. |
-| `RATE_LIMIT_PERIOD_MS` | `100` | Per-IP token-bucket refill period (default: one additional request roughly every 100ms, i.e. ~10 req/s sustained per IP). |
+| Variable                  | Default | Description                                                                                                                      |
+| ------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `MAX_CONCURRENT_REQUESTS` | `512`   | Total requests handled concurrently across all routes. Beyond this, a request is shed with `503` immediately rather than queued. |
+| `REQUEST_TIMEOUT_SECS`    | `30`    | Hard ceiling on end-to-end request time; a request still running past this is shed with `503`.                                   |
+| `RATE_LIMIT_BURST`        | `20`    | Per-IP token-bucket burst size before rate limiting engages.                                                                     |
+| `RATE_LIMIT_PERIOD_MS`    | `100`   | Per-IP token-bucket refill period (default: one additional request roughly every 100ms, i.e. ~10 req/s sustained per IP).        |
 
 A `0` value for any of the four is treated as unset (falls back to the
 default above) rather than as a literal zero limit.
@@ -61,11 +61,11 @@ default above) rather than as a literal zero limit.
 
 You can use predefined performance profiles by setting the `PERFORMANCE_PROFILE` environment variable:
 
-| Profile | Description |
-|---------|-------------|
-| `high_throughput` | Optimized for maximum throughput with higher resource usage |
-| `low_latency` | Optimized for minimal response time |
-| `memory_efficient` | Optimized for minimal memory usage |
+| Profile            | Description                                                 |
+| ------------------ | ----------------------------------------------------------- |
+| `high_throughput`  | Optimized for maximum throughput with higher resource usage |
+| `low_latency`      | Optimized for minimal response time                         |
+| `memory_efficient` | Optimized for minimal memory usage                          |
 
 When using a profile, individual environment variables will override the profile defaults.
 
@@ -80,7 +80,7 @@ names above - so a typo like `PERFORMANCE_PROFILE=hgh_throughput` would
 quietly run with different settings than intended, with no indication
 anything was wrong. The service now refuses to start in that case:
 
-```
+```text
 PERFORMANCE_PROFILE="hgh_throughput" is not a recognised profile - valid values are high_throughput, low_latency, memory_efficient (case-insensitive), or unset/empty to use the individually-configured (or default) settings instead.
 ```
 
@@ -175,21 +175,21 @@ The included benchmark tool is now fully configurable through environment variab
 
 Source of truth: `src/bin/benchmark.rs`'s `BenchmarkConfig`.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BENCHMARK_HOST` | `localhost` | Target host of the service under test |
-| `BENCHMARK_PORT` | `3000` | Target port of the service under test |
-| `BENCHMARK_CONCURRENCY_LEVELS` | `1,5,10,20,50` | Comma-separated list of concurrency levels to test |
-| `BENCHMARK_REQUESTS_PER_LEVEL` | `200` | Timed requests run at each concurrency level - the sample size percentiles (especially p99.9) are computed from |
-| `BENCHMARK_WARMUP_REQUESTS` | `10` | Requests run and discarded before each level is timed, so every level is measured warm |
-| `BENCHMARK_FIXTURE_NAMES` | `photo_like,flat,alpha,tiny` | Comma-separated list of generated fixtures (see `benches/fixtures.rs`) to rotate through as source images |
-| `BENCHMARK_RESIZE_PARAMS` | `300x300,800x,x600,1200x800` | Comma-separated list of resize parameters (format: `WIDTHxHEIGHT`) |
-| `BENCHMARK_WAIT_BETWEEN_TESTS` | `2` | Seconds to wait between different concurrency level tests |
-| `BENCHMARK_REQUEST_TIMEOUT` | `60` | Per-request timeout in seconds |
-| `BENCHMARK_OUTPUT_FORMAT` | `jpg` | Output image format for resize requests (`jpg`\|`png`\|`webp`\|`avif`\|`gif`) |
-| `BENCHMARK_FIXTURE_HOST` | `127.0.0.1` | Bind address of the local fixture-serving HTTP origin the benchmark starts inside its own process |
-| `BENCHMARK_FIXTURE_PORT` | `0` (random free port) | Port for the local fixture origin above |
-| `BENCHMARK_JSON_OUTPUT` | `target/benchmark-results.json` | Path to write the machine-readable JSON report to, alongside the human-readable table |
+| Variable                       | Default                         | Description                                                                                                     |
+| ------------------------------ | ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `BENCHMARK_HOST`               | `localhost`                     | Target host of the service under test                                                                           |
+| `BENCHMARK_PORT`               | `3000`                          | Target port of the service under test                                                                           |
+| `BENCHMARK_CONCURRENCY_LEVELS` | `1,5,10,20,50`                  | Comma-separated list of concurrency levels to test                                                              |
+| `BENCHMARK_REQUESTS_PER_LEVEL` | `200`                           | Timed requests run at each concurrency level - the sample size percentiles (especially p99.9) are computed from |
+| `BENCHMARK_WARMUP_REQUESTS`    | `10`                            | Requests run and discarded before each level is timed, so every level is measured warm                          |
+| `BENCHMARK_FIXTURE_NAMES`      | `photo_like,flat,alpha,tiny`    | Comma-separated list of generated fixtures (see `benches/fixtures.rs`) to rotate through as source images       |
+| `BENCHMARK_RESIZE_PARAMS`      | `300x300,800x,x600,1200x800`    | Comma-separated list of resize parameters (format: `WIDTHxHEIGHT`)                                              |
+| `BENCHMARK_WAIT_BETWEEN_TESTS` | `2`                             | Seconds to wait between different concurrency level tests                                                       |
+| `BENCHMARK_REQUEST_TIMEOUT`    | `60`                            | Per-request timeout in seconds                                                                                  |
+| `BENCHMARK_OUTPUT_FORMAT`      | `jpg`                           | Output image format for resize requests (`jpg`\|`png`\|`webp`\|`avif`\|`gif`)                                   |
+| `BENCHMARK_FIXTURE_HOST`       | `127.0.0.1`                     | Bind address of the local fixture-serving HTTP origin the benchmark starts inside its own process               |
+| `BENCHMARK_FIXTURE_PORT`       | `0` (random free port)          | Port for the local fixture origin above                                                                         |
+| `BENCHMARK_JSON_OUTPUT`        | `target/benchmark-results.json` | Path to write the machine-readable JSON report to, alongside the human-readable table                           |
 
 The benchmark no longer fetches source images over the network. It used to
 pull real photos from `picsum.photos` via a `BENCHMARK_TEST_URLS` variable;
