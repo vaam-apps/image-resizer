@@ -1,58 +1,77 @@
 name: Deploy Docs and Helm Chart
 
+# Both jobs publish to the gh-pages branch, which GitHub Pages serves at
+# emgr-oss.vaam.store: the VitePress docs site at the root, and the Helm
+# chart repository (index.yaml) that chart-releaser maintains next to it.
+# `keep_files: true` on the docs deploy is what lets the two share the
+# branch — without it every docs deploy would delete index.yaml.
+
 on:
   push:
     branches:
       - main
 
-permissions:
-  contents: write
-  packages: write # Required for pushing to GHCR
+permissions: {}
 
 jobs:
   deploy-website:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # actions-gh-pages pushes the built site to gh-pages.
+      contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # `lastUpdated` reads each page's last commit.
           fetch-depth: 0
+          persist-credentials: false
 
-      # MkDocs Steps
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
-          python-version: '3.x'
+          package_json_file: docs/package.json
 
-      - name: Install MkDocs and dependencies
-        run: |
-          pip install mkdocs-material
-          pip install mkdocs-git-revision-date-localized-plugin
-          pip install mkdocs-minify-plugin
-          pip install pymdown-extensions --force
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26
+          # No dependency cache in a workflow that publishes: a poisoned
+          # cache entry would ship straight to the live site.
+          package-manager-cache: false
 
-      - name: Build MkDocs site
-        run: mkdocs build --clean
+      - name: Install docs dependencies
+        working-directory: docs
+        run: pnpm install --frozen-lockfile
 
-      - name: Deploy MkDocs to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Build the docs site (VitePress)
+        working-directory: docs
+        run: pnpm build
+
+      - name: Deploy the docs to GitHub Pages
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./site
-          #destination_dir: docs  # Deploy docs to /docs subdirectory
-          keep_files: true       # Keep existing files in gh-pages branch
+          publish_dir: ./docs/.vitepress/dist
+          # Keep the Helm chart repository (index.yaml) and anything else
+          # already on gh-pages.
+          keep_files: true
 
   deploy-helm:
     needs:
       - deploy-website
     permissions:
       contents: write
+      packages: write
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # chart-releaser pushes index.yaml to gh-pages with plain git,
+          # so this job needs the checkout's credentials.
+          persist-credentials: true # zizmor: ignore[artipacked]
 
       - name: Configure Git
         run: |
@@ -60,7 +79,7 @@ jobs:
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 
@@ -70,7 +89,7 @@ jobs:
           helm repo update
 
       - name: Run chart-releaser
-        uses: helm/chart-releaser-action@v1
+        uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
         if: github.ref == 'refs/heads/main'
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"

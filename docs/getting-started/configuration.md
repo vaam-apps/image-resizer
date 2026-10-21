@@ -7,13 +7,14 @@ truth this page is generated against - a CI check
 (`.github/workflows/ci.yml`'s `docs-env-drift` job, `.github/scripts/check_env_docs.py`)
 fails the build if this table drifts from it in either direction.
 
-!!! note "This page previously documented variables that don't exist"
-    *CACHE_ENABLED*, *CACHE_TTL_SECONDS*, *S3_BUCKET*, *S3_REGION* and
-    *LOCAL_STORAGE_PATH* were listed here before but were never read by
-    the code (GH #47). There is no response-cache TTL setting today (see
-    [GH #40](https://github.com/vaam-store/image-resizer/issues/40)); the
-    real storage variables are `MINIO_BUCKET`, `MINIO_REGION` and
-    `LOCAL_FS_STORAGE_PATH`, documented below.
+::: info This page previously documented variables that don't exist
+*CACHE_ENABLED*, *CACHE_TTL_SECONDS*, *S3_BUCKET*, *S3_REGION* and
+*LOCAL_STORAGE_PATH* were listed here before but were never read by
+the code (GH #47). There is no response-cache TTL setting today (see
+[GH #40](https://github.com/vaam-store/image-resizer/issues/40)); the
+real storage variables are `MINIO_BUCKET`, `MINIO_REGION` and
+`LOCAL_FS_STORAGE_PATH`, documented below.
+:::
 
 ## Server
 

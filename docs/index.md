@@ -1,4 +1,49 @@
-# EmgR
+---
+title: emgr
+layout: home
+
+hero:
+  name: emgr
+  text: Image resizing, in pure Rust
+  tagline: An imgproxy-compatible service that fetches, resizes and caches images behind signed URLs. No C or C++ dependencies.
+  image:
+    src: /logo.svg
+    alt: emgr
+  actions:
+    - theme: brand
+      text: Get started
+      link: /getting-started/installation
+    - theme: alt
+      text: API reference
+      link: /user-guide/api-reference
+    - theme: alt
+      text: GitHub
+      link: https://github.com/vaam-apps/image-resizer
+
+features:
+  - icon: 🔏
+    title: Signed URLs, on by default
+    details: HMAC-signed, imgproxy-compatible URLs, an SSRF-guarded fetcher, and a service that fails closed at startup until signing is configured.
+    link: /user-guide/api-reference
+    linkText: URL grammar
+  - icon: 🦀
+    title: Pure-Rust codecs
+    details: JPEG, PNG, WebP, AVIF and animated GIF/WebP through a SIMD resampler, with no C or C++ dependencies to build or patch.
+    link: /architecture/components
+    linkText: How it is built
+  - icon: 🗄️
+    title: Pluggable storage
+    details: Local filesystem, S3/MinIO or in-memory, chosen at compile time with Cargo features.
+    link: /getting-started/installation
+    linkText: Pick a backend
+  - icon: ☸️
+    title: Ships to Kubernetes
+    details: A Helm chart, a Knative Service chart for serverless setups, and Docker images for each storage flavour.
+    link: /deployment/helm-chart
+    linkText: Deploy it
+---
+
+## Welcome
 
 Welcome to the documentation for **EmgR**, a high-performance, imgproxy-compatible
 image resizing service built in Rust. It fetches a source image over HTTP(S),
