@@ -298,7 +298,7 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 # 0.30 made it compile without fixing anything. These versions track each other
 # one for one (tracing-opentelemetry 0.33 <-> opentelemetry 0.32), so they can
 # only be bumped as a set; a per-crate Dependabot bump will always split them.
-tracing-opentelemetry = { version = "0.33", optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }
 tracing = { version = "0.1", features = ["attributes"] }
 prometheus = { version = "0.14", optional = true }
 dashmap = "6"
