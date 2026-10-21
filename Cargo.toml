@@ -54,7 +54,7 @@ harness = false
 [dependencies]
 axum = { version = "0.8", features = ["tracing", "tokio", "macros"] }
 axum-otel-metrics = { version = "0.14" } # opentelemetry ^0.32, see the tracing-opentelemetry comment
-axum-tracing-opentelemetry = { version = "0.39" }
+axum-tracing-opentelemetry = { version = "0.42" }
 # NOT "compression-full" (C-dependency removal): that feature is gzip+brotli+deflate+zstd,
 # and the zstd arm is the only one that is not pure Rust - it resolves to
 # `zstd-sys`, which compiles the C zstd library from source. gzip/deflate
