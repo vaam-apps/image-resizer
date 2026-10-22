@@ -159,7 +159,7 @@ services:
       - server
 
   minio:
-    image: bitnami/minio:latest
+    image: soldevelo/minio:2026.7.17@sha256:1b02c5747d97e68fb46e740d771c454391d79d985e4fa5051dbb240ccad1dc85
     deploy:
       resources:
         limits:
@@ -176,7 +176,7 @@ services:
       MINIO_BROWSER_LOGIN_ANIMATION: off
 
   minio-init:
-    image: bitnami/minio
+    image: soldevelo/minio:2026.7.17@sha256:1b02c5747d97e68fb46e740d771c454391d79d985e4fa5051dbb240ccad1dc85
     deploy:
       resources:
         limits:
